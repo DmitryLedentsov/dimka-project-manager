@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#090b10">
+  <meta name="csrf-token" content="{{ csrf_token }}">
+  <meta name="dpm-base-path" content="{{ base_path }}">
+  <title>{% block title %}DPM{% endblock %}</title>
+  <link rel="stylesheet" href="{{ base_path }}/static/css/app-base.css">
+  <link rel="stylesheet" href="{{ base_path }}/static/css/app-components.css">
+  <link rel="stylesheet" href="{{ base_path }}/static/css/app-pages.css">
+</head>
+<body class="{% block body_class %}{% endblock %}">
+  <div class="ambient ambient-one"></div><div class="ambient ambient-two"></div><div class="grid-noise"></div>
+  {% if current_user %}
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar">
+      <a class="brand" href="{{ base_path }}/"><span class="brand-mark"><i></i><i></i><i></i></span><span><strong>DPM</strong><small>project manager</small></span></a>
+      <nav class="nav-stack">
+        <a class="nav-item {% if active_page == 'overview' %}active{% endif %}" href="{{ base_path }}/"><span class="nav-icon icon-grid"></span><span>Overview</span></a>
+        <button class="nav-item js-open-add" type="button"><span class="nav-icon icon-plus"></span><span>Add service</span></button>
+      </nav>
+      <div class="sidebar-signal"><div class="signal-lines"><span></span><span></span><span></span><span></span></div><p>Autonomous deploy loop</p><small>Git polling · process control</small></div>
+      <div class="sidebar-footer">
+        <button class="user-chip js-open-password" type="button"><span class="avatar">{{ current_user.username[:2] | upper }}</span><span><strong>{{ current_user.username }}</strong><small>Administrator</small></span></button>
+        <form action="{{ base_path }}/logout" method="post"><button class="icon-button" title="Выйти" type="submit">↗</button></form>
+      </div>
+    </aside>
+    <div class="main-column">
+      <header class="topbar"><button class="mobile-menu" id="mobile-menu" aria-label="Меню"><span></span><span></span></button><div class="command-search"><span>⌕</span><input type="search" id="global-filter" placeholder="Search services..." autocomplete="off"><kbd>/</kbd></div><div class="topbar-meta"><span class="pulse-dot"></span><span class="desktop-only">DPM v{{ dpm_version }}</span><span class="clock" id="live-clock">--:--</span></div></header>
+      <main class="content">
+        {% if default_credentials %}<div class="security-banner" id="default-credentials-banner"><div><strong>Default credentials are active.</strong><span>Change admin/admin before exposing the panel publicly.</span></div><button class="button button-small js-open-password" type="button">Change password</button></div>{% endif %}
+        {% block content %}{% endblock %}
+      </main>
+    </div>
+  </div>
+  <div class="modal-backdrop" id="add-project-modal" aria-hidden="true"><section class="modal-card" role="dialog" aria-modal="true" aria-labelledby="add-project-title"><button class="modal-close" data-close-modal type="button">×</button><div class="eyebrow">NEW DEPLOYMENT TARGET</div><h2 id="add-project-title">Add service from Git</h2><p class="modal-copy">DPM clones the repository, reads <code>dpm.yaml</code>, builds it and starts all declared services.</p><form id="add-project-form" class="form-stack"><label><span>Repository URL</span><input name="repository_url" type="text" required placeholder="git@github.com:user/project.git" autocomplete="off"></label><div class="form-grid"><label><span>Branch</span><input name="branch" type="text" value="master" required></label><label><span>Project name <em>optional</em></span><input name="name" type="text" placeholder="derived from repository"></label></div><div class="form-grid"><label><span>Poll interval</span><div class="input-suffix"><input name="poll_interval" type="number" min="15" value="60"><b>sec</b></div></label><label class="toggle-label"><span>Automatic updates</span><input name="auto_update" type="checkbox" checked><i></i></label></div><div class="form-hint"><span>◇</span> Private repositories use the SSH key of the <code>dpm</code> server user.</div><button class="button button-primary button-full" type="submit"><span class="button-glow"></span>Add & deploy</button></form></section></div>
+  <div class="modal-backdrop" id="password-modal" aria-hidden="true"><section class="modal-card modal-small" role="dialog" aria-modal="true"><button class="modal-close" data-close-modal type="button">×</button><div class="eyebrow">SECURITY</div><h2>Change password</h2><form id="password-form" class="form-stack"><label><span>Current password</span><input name="current_password" type="password" required></label><label><span>New password</span><input name="new_password" type="password" minlength="8" required></label><label><span>Repeat password</span><input name="repeat_password" type="password" minlength="8" required></label><button class="button button-primary button-full" type="submit">Update password</button></form></section></div>
+  {% endif %}
+  {% if not current_user %}{% block public_content %}{% endblock %}{% endif %}
+  <div class="toast-stack" id="toast-stack"></div>
+  <script src="https://code.jquery.com/jquery-3.7.1.min.js" integrity="sha256-/JqT3SQfawRcv/BIHPThkBvs0OEvtFFmqPF/lYI/Cxo=" crossorigin="anonymous"></script>
+  <script src="{{ base_path }}/static/js/common.js"></script>{% block scripts %}{% endblock %}
+</body>
+</html>

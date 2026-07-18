@@ -1,0 +1,26 @@
+version: 1
+
+project:
+  name: example-project
+
+build:
+  commands:
+    - python3 -m compileall app
+
+services:
+  - name: api
+    command: ["python3", "-m", "app"]
+    working_directory: "."
+    environment_file: ".env"
+    restart: always
+    healthcheck:
+      type: http
+      url: http://127.0.0.1:8080/health
+      timeout_seconds: 30
+
+  - name: worker
+    command: "python3 worker.py"
+    working_directory: "."
+    restart: on-failure
+    depends_on:
+      - api
