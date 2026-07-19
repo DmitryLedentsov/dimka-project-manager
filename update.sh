@@ -123,4 +123,37 @@ fi
 
 systemctl enable --now dimka-project-manager.service
 
+# Explicitly start every enabled service. This also covers restart_policy=never:
+# the process was stopped only for the one-time user-to-root migration and must
+# come back under root rather than remain failed.
+log "Starting enabled services as root"
+DPM_CONFIG_FILE="$CONFIG_FILE" "$VENV_DIR/bin/python" - <<'PY'
+import time
+from dpm.cli import CliError, DpmClient
+
+client = DpmClient()
+services = None
+last_error = None
+for _ in range(30):
+    try:
+        services = client.request("GET", "/services").get("services", [])
+        break
+    except CliError as exc:
+        last_error = exc
+        time.sleep(0.5)
+
+if services is None:
+    print(f"[dpm] Warning: daemon started, but service list was unavailable: {last_error}")
+else:
+    for service in services:
+        if not service.get("enabled"):
+            continue
+        try:
+            result = client.request("POST", f"/services/{service['id']}/start", {})
+            state = result.get("service", {}).get("status", "unknown")
+            print(f"[dpm] {service['project_name']}/{service['name']}: {state}")
+        except CliError as exc:
+            print(f"[dpm] {service['project_name']}/{service['name']}: failed to start: {exc}")
+PY
+
 echo "[dpm] Update complete: manager and managed services now run as root"
