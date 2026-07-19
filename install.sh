@@ -11,7 +11,6 @@ APP_DIR="/opt/dimka-project-manager"
 DATA_DIR="/var/lib/dpm"
 LOG_DIR="/var/log/dpm"
 RUN_DIR="/run/dpm"
-SERVICE_USER="dpm"
 VENV_DIR="$APP_DIR/venv"
 
 log() { echo "[dpm] $*"; }
@@ -59,14 +58,36 @@ ensure_virtual_environment() {
   fi
 }
 
+write_systemd_unit() {
+  cat > /etc/systemd/system/dimka-project-manager.service <<'EOF_UNIT'
+[Unit]
+Description=Dimka Project Manager
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/dimka-project-manager
+EnvironmentFile=/etc/dpm/config.env
+Environment=HOME=/var/lib/dpm
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/dimka-project-manager/venv/bin/python -m dpm.app
+Restart=always
+RestartSec=3
+KillMode=process
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target
+EOF_UNIT
+}
+
 if ! system_dependencies_ready; then
   install_system_dependencies
 fi
 
-if ! id "$SERVICE_USER" >/dev/null 2>&1; then
-  log "Creating system user $SERVICE_USER"
-  useradd --system --home-dir "$DATA_DIR" --create-home --shell /bin/bash "$SERVICE_USER"
-fi
+# Stop an older installation before changing ownership or its systemd identity.
+systemctl stop dimka-project-manager.service 2>/dev/null || true
 
 mkdir -p "$APP_DIR" "$DATA_DIR/projects" "$LOG_DIR" "$RUN_DIR" "$DATA_DIR/.ssh"
 log "Copying application files"
@@ -79,43 +100,21 @@ log "Installing Python dependencies"
 "$VENV_DIR/bin/python" -m pip install --disable-pip-version-check --upgrade pip >/dev/null
 "$VENV_DIR/bin/python" -m pip install --disable-pip-version-check -r "$APP_DIR/requirements.txt"
 
+# DPM deliberately runs as root. Its Git operations, builds and every managed
+# service inherit root privileges. The isolated HOME only keeps DPM's SSH files
+# separate from the interactive root account.
 if [[ ! -f "$DATA_DIR/.ssh/id_ed25519" ]]; then
   log "Generating Git SSH key"
-  ssh-keygen -q -t ed25519 -N '' -C "dpm@$(hostname)" -f "$DATA_DIR/.ssh/id_ed25519"
+  ssh-keygen -q -t ed25519 -N '' -C "dpm-root@$(hostname)" -f "$DATA_DIR/.ssh/id_ed25519"
 fi
 chmod 700 "$DATA_DIR/.ssh"
 chmod 600 "$DATA_DIR/.ssh/id_ed25519"
 chmod 644 "$DATA_DIR/.ssh/id_ed25519.pub"
 
-chown -R root:root "$APP_DIR"
+chown -R root:root "$APP_DIR" "$DATA_DIR" "$LOG_DIR" "$RUN_DIR"
 chmod +x "$APP_DIR/install.sh" "$APP_DIR/update.sh" "$APP_DIR/uninstall.sh" "$APP_DIR/config.sh"
-chown -R "$SERVICE_USER:$SERVICE_USER" "$DATA_DIR" "$LOG_DIR" "$RUN_DIR"
 
-cat > /etc/systemd/system/dimka-project-manager.service <<'EOF_UNIT'
-[Unit]
-Description=Dimka Project Manager
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=dpm
-Group=dpm
-WorkingDirectory=/opt/dimka-project-manager
-EnvironmentFile=/etc/dpm/config.env
-Environment=HOME=/var/lib/dpm
-Environment=PYTHONUNBUFFERED=1
-ExecStart=/opt/dimka-project-manager/venv/bin/python -m dpm.app
-Restart=always
-RestartSec=3
-KillMode=process
-TimeoutStopSec=15
-AmbientCapabilities=CAP_NET_BIND_SERVICE
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE
-
-[Install]
-WantedBy=multi-user.target
-EOF_UNIT
+write_systemd_unit
 
 cat > /usr/local/bin/dpm <<'EOF_CLI'
 #!/usr/bin/env bash
@@ -127,6 +126,16 @@ chmod +x /usr/local/bin/dpm
 
 log "Configuring administrator and public URL"
 DPM_APP_DIR="$APP_DIR" "$APP_DIR/config.sh"
+
+# Remove the obsolete system account created by early DPM builds. Its home and
+# SSH key stay in /var/lib/dpm and are now owned and used by root.
+if id dpm >/dev/null 2>&1; then
+  pkill -TERM -u dpm 2>/dev/null || true
+  sleep 1
+  pkill -KILL -u dpm 2>/dev/null || true
+  userdel dpm 2>/dev/null || true
+fi
+chown -R root:root "$DATA_DIR" "$LOG_DIR" "$RUN_DIR"
 
 systemctl daemon-reload
 systemctl enable --now dimka-project-manager.service
