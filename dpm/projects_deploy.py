@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .gitops import GitError
-from .manifest import ManifestError, ProjectManifest, load_manifest
+from .manifest import ManifestError, ProjectManifest, ServiceDefinition, load_manifest
 from .projects_base import ProjectError
 from .supervisor import ServiceError
 from .utils import slugify, tail_file, utc_now
@@ -69,10 +69,10 @@ class DeploymentMixin:
                     f"manifest loaded: {len(manifest.services)} service(s)",
                 )
 
-                # Register manifest services before building. A failed first build must
-                # still leave visible service records and an inspectable project in the
-                # UI instead of disappearing from the runtime matrix completely.
-                self._sync_services(project, manifest)
+                # A failed first build must still expose the declared services in the
+                # dashboard. Only missing records are added here: existing running
+                # services are not changed or removed until the new build succeeds.
+                self._register_missing_services(project, manifest)
 
                 self._set_deploy_state(project_id, "deploying", "building", None)
                 self.db.update("deployments", deployment_id, {"stage": "building"})
@@ -81,6 +81,9 @@ class DeploymentMixin:
                 self._set_deploy_state(project_id, "deploying", "stopping", None)
                 self.db.update("deployments", deployment_id, {"stage": "stopping"})
                 self.supervisor.stop_project(project_id)
+
+                # The artifacts are valid now, so apply removals and definition changes.
+                self._sync_services(project, manifest)
 
                 self._set_deploy_state(project_id, "deploying", "starting", None)
                 self.db.update("deployments", deployment_id, {"stage": "starting"})
@@ -251,6 +254,77 @@ class DeploymentMixin:
                     message += f" — {detail}"
                 raise ProjectError(message)
 
+    def _service_values(
+        self,
+        project: dict[str, Any],
+        definition: ServiceDefinition,
+        now: str,
+    ) -> dict[str, Any]:
+        log_path = self.settings.log_dir / project["name"] / f"{slugify(definition.name)}.log"
+        return {
+            "command_json": json.dumps(definition.command_for_storage()),
+            "working_directory": definition.working_directory,
+            "environment_json": json.dumps(definition.environment),
+            "environment_file": definition.environment_file,
+            "restart_policy": definition.restart_policy,
+            "healthcheck_json": json.dumps(definition.healthcheck) if definition.healthcheck else None,
+            "depends_on_json": json.dumps(definition.depends_on),
+            "enabled": 1 if definition.enabled else 0,
+            "log_path": str(log_path),
+            "updated_at": now,
+        }
+
+    def _insert_service(
+        self,
+        project: dict[str, Any],
+        definition: ServiceDefinition,
+        values: dict[str, Any],
+        now: str,
+    ) -> None:
+        self.db.execute(
+            """
+            INSERT INTO services (
+                project_id, name, command_json, working_directory,
+                environment_json, environment_file, restart_policy,
+                healthcheck_json, depends_on_json, enabled, status,
+                log_path, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'stopped', ?, ?, ?)
+            """,
+            [
+                project["id"],
+                definition.name,
+                values["command_json"],
+                definition.working_directory,
+                values["environment_json"],
+                definition.environment_file,
+                definition.restart_policy,
+                values["healthcheck_json"],
+                values["depends_on_json"],
+                values["enabled"],
+                values["log_path"],
+                now,
+                now,
+            ],
+        )
+
+    def _register_missing_services(
+        self,
+        project: dict[str, Any],
+        manifest: ProjectManifest,
+    ) -> None:
+        existing_names = {
+            row["name"]
+            for row in self.db.fetchall(
+                "SELECT name FROM services WHERE project_id = ?", [project["id"]]
+            )
+        }
+        now = utc_now()
+        for definition in manifest.services:
+            if definition.name in existing_names:
+                continue
+            values = self._service_values(project, definition, now)
+            self._insert_service(project, definition, values, now)
+
     def _sync_services(self, project: dict[str, Any], manifest: ProjectManifest) -> None:
         now = utc_now()
         existing = {
@@ -266,47 +340,11 @@ class DeploymentMixin:
                 self.supervisor.delete_service(row["id"])
 
         for definition in manifest.services:
-            log_path = self.settings.log_dir / project["name"] / f"{slugify(definition.name)}.log"
-            values = {
-                "command_json": json.dumps(definition.command_for_storage()),
-                "working_directory": definition.working_directory,
-                "environment_json": json.dumps(definition.environment),
-                "environment_file": definition.environment_file,
-                "restart_policy": definition.restart_policy,
-                "healthcheck_json": json.dumps(definition.healthcheck) if definition.healthcheck else None,
-                "depends_on_json": json.dumps(definition.depends_on),
-                "enabled": 1 if definition.enabled else 0,
-                "log_path": str(log_path),
-                "updated_at": now,
-            }
+            values = self._service_values(project, definition, now)
             if definition.name in existing:
                 self.db.update("services", existing[definition.name]["id"], values)
             else:
-                self.db.execute(
-                    """
-                    INSERT INTO services (
-                        project_id, name, command_json, working_directory,
-                        environment_json, environment_file, restart_policy,
-                        healthcheck_json, depends_on_json, enabled, status,
-                        log_path, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'stopped', ?, ?, ?)
-                    """,
-                    [
-                        project["id"],
-                        definition.name,
-                        values["command_json"],
-                        definition.working_directory,
-                        values["environment_json"],
-                        definition.environment_file,
-                        definition.restart_policy,
-                        values["healthcheck_json"],
-                        values["depends_on_json"],
-                        values["enabled"],
-                        str(log_path),
-                        now,
-                        now,
-                    ],
-                )
+                self._insert_service(project, definition, values, now)
 
     def delete_project(self, project_id: int, *, purge: bool = True) -> None:
         project = self.db.fetchone("SELECT * FROM projects WHERE id = ?", [project_id])
