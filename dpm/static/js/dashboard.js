@@ -28,7 +28,10 @@
   function render(data){
     $('#metric-services').text(data.stats.services);
     $('#metric-running').text(data.stats.running);
-    $('#metric-failed').text(data.stats.failed);
+    var failedProjectIds={};
+    data.issues.forEach(function(project){failedProjectIds[project.id]=true;});
+    var independentServiceFailures=data.services.filter(function(service){return (service.status==='failed'||service.status==='unhealthy')&&!failedProjectIds[service.project_id];}).length;
+    $('#metric-failed').text(data.issues.length+independentServiceFailures);
     $('#metric-projects').text(data.projects.length);
     var health=data.stats.services?Math.round((data.stats.running/data.stats.services)*100):100;
     $('#health-percent').text(health+'%');
