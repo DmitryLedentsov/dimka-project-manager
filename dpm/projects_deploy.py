@@ -69,6 +69,11 @@ class DeploymentMixin:
                     f"manifest loaded: {len(manifest.services)} service(s)",
                 )
 
+                # Register manifest services before building. A failed first build must
+                # still leave visible service records and an inspectable project in the
+                # UI instead of disappearing from the runtime matrix completely.
+                self._sync_services(project, manifest)
+
                 self._set_deploy_state(project_id, "deploying", "building", None)
                 self.db.update("deployments", deployment_id, {"stage": "building"})
                 self._run_build(project, manifest, deployment_log)
@@ -76,8 +81,6 @@ class DeploymentMixin:
                 self._set_deploy_state(project_id, "deploying", "stopping", None)
                 self.db.update("deployments", deployment_id, {"stage": "stopping"})
                 self.supervisor.stop_project(project_id)
-
-                self._sync_services(project, manifest)
 
                 self._set_deploy_state(project_id, "deploying", "starting", None)
                 self.db.update("deployments", deployment_id, {"stage": "starting"})
@@ -180,6 +183,32 @@ class DeploymentMixin:
         with path.open("a", encoding="utf-8") as handle:
             handle.write(f"[{utc_now()}] [deploy] {message}\n")
 
+    @staticmethod
+    def _build_failure_detail(path: Path) -> str | None:
+        lines = [line.strip() for line in tail_file(path, 80).splitlines() if line.strip()]
+        if not lines:
+            return None
+
+        preferred_markers = (
+            "ERROR:",
+            "[ERROR]",
+            "npm ERR!",
+            "fatal:",
+            "permission denied",
+            "not found",
+            "is required",
+            "is missing",
+        )
+        for line in reversed(lines):
+            lowered = line.lower()
+            if any(marker.lower() in lowered for marker in preferred_markers):
+                return line[:420]
+
+        for line in reversed(lines):
+            if "[deploy]" not in line:
+                return line[:420]
+        return None
+
     def _run_build(
         self,
         project: dict[str, Any],
@@ -216,7 +245,11 @@ class DeploymentMixin:
                         pass
                     raise ProjectError(f"Build timed out: {command}") from exc
             if return_code != 0:
-                raise ProjectError(f"Build command exited with {return_code}: {command}")
+                detail = self._build_failure_detail(log_path)
+                message = f"Build command exited with {return_code}: {command}"
+                if detail:
+                    message += f" — {detail}"
+                raise ProjectError(message)
 
     def _sync_services(self, project: dict[str, Any], manifest: ProjectManifest) -> None:
         now = utc_now()
