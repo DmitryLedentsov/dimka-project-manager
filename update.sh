@@ -10,7 +10,6 @@ SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_DIR="/opt/dimka-project-manager"
 VENV_DIR="$APP_DIR/venv"
 CONFIG_FILE="${DPM_CONFIG_FILE:-/etc/dpm/config.env}"
-SERVICE_USER="dpm"
 
 log() { echo "[dpm] $*"; }
 
@@ -50,9 +49,44 @@ ensure_virtual_environment() {
   fi
 }
 
+write_systemd_unit() {
+  cat > /etc/systemd/system/dimka-project-manager.service <<'EOF_UNIT'
+[Unit]
+Description=Dimka Project Manager
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/dimka-project-manager
+EnvironmentFile=/etc/dpm/config.env
+Environment=HOME=/var/lib/dpm
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/dimka-project-manager/venv/bin/python -m dpm.app
+Restart=always
+RestartSec=3
+KillMode=process
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target
+EOF_UNIT
+}
+
 if ! command -v python3 >/dev/null 2>&1 \
   || ! python3 -c 'import venv, ensurepip' >/dev/null 2>&1; then
   install_system_dependencies
+fi
+
+log "Stopping current manager"
+systemctl stop dimka-project-manager.service 2>/dev/null || true
+
+# Early builds ran the manager and all child services under a generated dpm
+# account. Stop those processes before switching the complete stack to root.
+if id dpm >/dev/null 2>&1; then
+  pkill -TERM -u dpm 2>/dev/null || true
+  sleep 1
+  pkill -KILL -u dpm 2>/dev/null || true
 fi
 
 log "Updating manager code"
@@ -66,12 +100,6 @@ log "Installing Python dependencies"
 "$VENV_DIR/bin/python" -m pip install --disable-pip-version-check --upgrade pip >/dev/null
 "$VENV_DIR/bin/python" -m pip install --disable-pip-version-check -r "$APP_DIR/requirements.txt"
 
-chown -R root:root "$APP_DIR"
-chmod +x "$APP_DIR/install.sh" "$APP_DIR/update.sh" "$APP_DIR/uninstall.sh" "$APP_DIR/config.sh"
-
-# Repair installations made by early DPM versions where SQLite was created by
-# root during config.sh. The daemon itself runs as dpm and must own all mutable
-# runtime state, including database WAL/SHM files and checked-out repositories.
 if [[ -f "$CONFIG_FILE" ]]; then
   # shellcheck disable=SC1090
   source "$CONFIG_FILE"
@@ -80,9 +108,19 @@ DATA_DIR="${DPM_DATA_DIR:-/var/lib/dpm}"
 LOG_DIR="${DPM_LOG_DIR:-/var/log/dpm}"
 RUN_DIR="/run/dpm"
 mkdir -p "$DATA_DIR/projects" "$DATA_DIR/.ssh" "$LOG_DIR" "$RUN_DIR"
-chown -R "$SERVICE_USER:$SERVICE_USER" "$DATA_DIR" "$LOG_DIR" "$RUN_DIR"
 
+chown -R root:root "$APP_DIR" "$DATA_DIR" "$LOG_DIR" "$RUN_DIR"
+chmod +x "$APP_DIR/install.sh" "$APP_DIR/update.sh" "$APP_DIR/uninstall.sh" "$APP_DIR/config.sh"
+[[ ! -f "$CONFIG_FILE" ]] || { chown root:root "$CONFIG_FILE"; chmod 600 "$CONFIG_FILE"; }
+
+write_systemd_unit
 systemctl daemon-reload
-systemctl restart dimka-project-manager.service
 
-echo "[dpm] Update complete"
+# The obsolete account is no longer referenced by systemd or any runtime file.
+if id dpm >/dev/null 2>&1; then
+  userdel dpm 2>/dev/null || true
+fi
+
+systemctl enable --now dimka-project-manager.service
+
+echo "[dpm] Update complete: manager and managed services now run as root"
