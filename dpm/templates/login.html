@@ -1,4 +1,36 @@
 {% extends "base.html" %}
-{% block title %}Sign in · DPM{% endblock %}
-{% block body_class %}login-page{% endblock %}
-{% block public_content %}<div class="login-shell"><section class="login-visual"><a class="brand login-brand" href="{{ base_path }}/login"><span class="brand-mark"><i></i><i></i><i></i></span><span><strong>DPM</strong><small>dimka project manager</small></span></a><div class="orbital-system" aria-hidden="true"><div class="orbit orbit-a"><span></span></div><div class="orbit orbit-b"><span></span></div><div class="orbit orbit-c"><span></span></div><div class="orbit-core"><b>DPM</b><small>01</small></div><div class="data-label label-one">PROCESS<br><b>CONTROL</b></div><div class="data-label label-two">GIT<br><b>POLLING</b></div><div class="data-label label-three">BUILD<br><b>STREAM</b></div></div><div class="login-tagline"><span>ONE SERVER / EVERY PROJECT</span><h1>Ship code.<br><em>Watch it breathe.</em></h1><p>A minimal control surface for repositories, builds and living processes.</p></div></section><section class="login-panel"><div class="login-form-wrap"><div class="eyebrow">SECURE CONSOLE</div><h2>Welcome back</h2><p>Sign in to control your deployment network.</p>{% if error %}<div class="form-error">{{ error }}</div>{% endif %}<form method="post" class="form-stack login-form"><label><span>Username</span><input name="username" value="{{ entered_username or 'admin' }}" autocomplete="username" autofocus required></label><label><span>Password</span><input name="password" type="password" autocomplete="current-password" required></label><button class="button button-primary button-full" type="submit"><span class="button-glow"></span>Enter panel <b>↗</b></button></form><div class="default-access"><span>Default access</span><code>admin / admin</code></div></div><footer><span>LOCAL NODE</span><i></i><span>{{ public_url }}</span></footer></section></div>{% endblock %}
+{% block title %}Operator access · DPM{% endblock %}
+{% block body_class %}login-page infra-login-page{% endblock %}
+{% block public_content %}
+<div class="infra-login-shell">
+  <section class="infra-login-system">
+    <div class="infra-login-brand"><span class="infra-brand-mark large"><b>D</b><i></i></span><div><strong>DPM</strong><small>DIMKA PROJECT MANAGER</small></div></div>
+    <div class="infra-login-visual" aria-hidden="true">
+      <div class="login-axis axis-x"></div><div class="login-axis axis-y"></div>
+      <div class="login-ring ring-a"></div><div class="login-ring ring-b"></div>
+      <div class="login-core"><span>NODE</span><b>01</b><small>ONLINE</small></div>
+      <div class="login-vector vector-a"></div><div class="login-vector vector-b"></div><div class="login-vector vector-c"></div>
+      <div class="login-label label-a">GIT / POLL</div><div class="login-label label-b">PROC / CTRL</div><div class="login-label label-c">BUILD / RUN</div>
+    </div>
+    <div class="infra-login-copy"><div class="infra-kicker">SINGLE NODE INFRASTRUCTURE CONTROL</div><h1>Operate every project<br>from one surface.</h1><p>Repository polling, deployments, process supervision and live logs.</p></div>
+    <div class="infra-login-telemetry"><span><i></i> DAEMON READY</span><span>API LOCAL</span><span>v{{ dpm_version }}</span></div>
+  </section>
+
+  <section class="infra-login-panel">
+    <div class="infra-login-panel-head"><span>AUTH / OPERATOR</span><b>SECURE ACCESS</b></div>
+    <div class="login-form-wrap infra-login-form-wrap">
+      <div class="eyebrow">CONTROL CONSOLE</div>
+      <h2>Operator sign in</h2>
+      <p>Authenticate to access the infrastructure node.</p>
+      {% if error %}<div class="form-error">AUTH FAILURE / {{ error }}</div>{% endif %}
+      <form method="post" class="form-stack login-form infra-login-form">
+        <label><span>OPERATOR ID</span><input name="username" value="{{ entered_username or 'admin' }}" autocomplete="username" autofocus required></label>
+        <label><span>ACCESS KEY</span><input name="password" type="password" autocomplete="current-password" required></label>
+        <button class="button button-primary button-full" type="submit">ENTER CONTROL SURFACE <b>→</b></button>
+      </form>
+      <div class="default-access"><span>DEFAULT ACCESS</span><code>admin / admin</code></div>
+    </div>
+    <footer><span>ENDPOINT</span><i></i><code>{{ public_url }}</code></footer>
+  </section>
+</div>
+{% endblock %}
