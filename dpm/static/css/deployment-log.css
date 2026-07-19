@@ -1,0 +1,12 @@
+.deployment-log-card{width:min(1040px,100%)!important;padding:0!important;overflow:hidden!important}
+.deployment-log-card::before{width:150px!important}
+.deployment-log-head{min-height:92px;padding:20px 22px;display:flex;align-items:center;justify-content:space-between;gap:24px;border-bottom:1px solid var(--line);background:#0c100e}
+.deployment-log-head h2{margin:7px 0 4px!important}
+.deployment-log-head p{margin:0;color:var(--muted);font:9px/1.4 "SFMono-Regular",Consolas,monospace;letter-spacing:.08em;text-transform:uppercase}
+.deployment-terminal-head{margin:0!important}
+.deployment-log-console{min-height:440px!important;max-height:65vh!important;white-space:pre-wrap!important;overflow:auto!important}
+.issue-actions{display:flex;align-items:center;gap:6px}
+.issue-actions .mini-action{white-space:nowrap}
+.service-project-link{color:inherit}
+.service-project-link:hover{color:var(--cyan)}
+@media(max-width:720px){.deployment-log-head{align-items:flex-start;flex-direction:column;padding-right:54px}.deployment-log-card{height:calc(100vh - 24px)}.deployment-log-console{max-height:calc(100vh - 190px)!important;min-height:calc(100vh - 190px)!important}}
