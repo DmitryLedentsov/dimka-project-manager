@@ -6,19 +6,23 @@
 
   function serviceRow(service){
     var status=service.status||'unknown';
-    var initialBuildFailed=status!=='running'&&service.deploy_status==='failed'&&!service.deployed_commit;
-    var displayStatus=initialBuildFailed?'build_failed':status;
+    var firstDeployment=!service.deployed_commit&&status!=='running';
+    var deploymentWorking=firstDeployment&&(service.deploy_status==='deploying'||service.deploy_status==='queued');
+    var initialBuildFailed=firstDeployment&&service.deploy_status==='failed';
+    var displayStatus=initialBuildFailed?'build_failed':deploymentWorking?(service.deploy_stage||service.deploy_status):status;
     var error=service.last_error||service.project_error;
     var runtime=service.pid?DPM.formatUptime(service.uptime_seconds)+'<small>'+DPM.escape(service.memory_mb)+' MB</small>':'—';
     var control;
     if(initialBuildFailed){
       control='<button class="mini-action js-project-log" data-project="'+service.project_id+'" data-name="'+DPM.escape(service.project_name)+'">Logs</button>';
+    }else if(deploymentWorking){
+      control='<button class="mini-action" disabled>Deploying</button>';
     }else{
       var action=status==='running'?'stop':'start';
       var actionLabel=status==='running'?'Stop':'Start';
       control='<button class="mini-action js-service-action" data-id="'+service.id+'" data-action="'+action+'">'+actionLabel+'</button><a class="mini-action icon-only" href="'+DPM.basePath+'/services/'+service.id+'">↗</a>';
     }
-    return '<tr class="service-row" data-search="'+DPM.escape((service.project_name+' '+service.name+' '+service.repository_url).toLowerCase())+'"><td><a class="service-identity" href="'+DPM.basePath+'/services/'+service.id+'"><span class="service-glyph"><i></i><i></i></span><span><strong>'+DPM.escape(service.name)+'</strong><small>'+DPM.escape(service.project_name)+'</small></span></a></td><td><span class="status-pill '+DPM.statusClass(displayStatus)+'"><i></i><span>'+DPM.escape(displayStatus.replaceAll('_',' ').toUpperCase())+'</span></span>'+(error?'<span class="row-error" title="'+DPM.escape(error)+'">!</span>':'')+'</td><td><div class="repo-cell"><strong>'+DPM.escape(service.branch)+'</strong><small>'+DPM.escape(service.repository_url)+'</small></div></td><td><code class="commit-chip">'+DPM.shortSha(service.deployed_commit)+'</code></td><td><div class="runtime-cell">'+runtime+'</div></td><td><div class="row-actions">'+control+'</div></td></tr>';
+    return '<tr class="service-row" data-search="'+DPM.escape((service.project_name+' '+service.name+' '+service.repository_url).toLowerCase())+'"><td><a class="service-identity" href="'+DPM.basePath+'/services/'+service.id+'"><span class="service-glyph"><i></i><i></i></span><span><strong>'+DPM.escape(service.name)+'</strong><small>'+DPM.escape(service.project_name)+'</small></span></a></td><td><span class="status-pill '+DPM.statusClass(displayStatus)+'"><i></i><span>'+DPM.escape(String(displayStatus).replaceAll('_',' ').toUpperCase())+'</span></span>'+(error?'<span class="row-error" title="'+DPM.escape(error)+'">!</span>':'')+'</td><td><div class="repo-cell"><strong>'+DPM.escape(service.branch)+'</strong><small>'+DPM.escape(service.repository_url)+'</small></div></td><td><code class="commit-chip">'+DPM.shortSha(service.deployed_commit)+'</code></td><td><div class="runtime-cell">'+runtime+'</div></td><td><div class="row-actions">'+control+'</div></td></tr>';
   }
 
   function issueCard(project){
