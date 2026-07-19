@@ -89,6 +89,15 @@ fi
 # Stop an older installation before changing ownership or its systemd identity.
 systemctl stop dimka-project-manager.service 2>/dev/null || true
 
+# Early builds created a dpm account and launched every managed process through
+# it. Remove those processes and the account before the root daemon starts.
+if id dpm >/dev/null 2>&1; then
+  pkill -TERM -u dpm 2>/dev/null || true
+  sleep 1
+  pkill -KILL -u dpm 2>/dev/null || true
+  userdel dpm 2>/dev/null || true
+fi
+
 mkdir -p "$APP_DIR" "$DATA_DIR/projects" "$LOG_DIR" "$RUN_DIR" "$DATA_DIR/.ssh"
 log "Copying application files"
 tar -C "$SOURCE_DIR" \
@@ -115,6 +124,7 @@ chown -R root:root "$APP_DIR" "$DATA_DIR" "$LOG_DIR" "$RUN_DIR"
 chmod +x "$APP_DIR/install.sh" "$APP_DIR/update.sh" "$APP_DIR/uninstall.sh" "$APP_DIR/config.sh"
 
 write_systemd_unit
+systemctl daemon-reload
 
 cat > /usr/local/bin/dpm <<'EOF_CLI'
 #!/usr/bin/env bash
@@ -127,17 +137,7 @@ chmod +x /usr/local/bin/dpm
 log "Configuring administrator and public URL"
 DPM_APP_DIR="$APP_DIR" "$APP_DIR/config.sh"
 
-# Remove the obsolete system account created by early DPM builds. Its home and
-# SSH key stay in /var/lib/dpm and are now owned and used by root.
-if id dpm >/dev/null 2>&1; then
-  pkill -TERM -u dpm 2>/dev/null || true
-  sleep 1
-  pkill -KILL -u dpm 2>/dev/null || true
-  userdel dpm 2>/dev/null || true
-fi
 chown -R root:root "$DATA_DIR" "$LOG_DIR" "$RUN_DIR"
-
-systemctl daemon-reload
 systemctl enable --now dimka-project-manager.service
 
 log "Installation complete"
