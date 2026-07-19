@@ -12,18 +12,55 @@ DATA_DIR="/var/lib/dpm"
 LOG_DIR="/var/log/dpm"
 RUN_DIR="/run/dpm"
 SERVICE_USER="dpm"
+VENV_DIR="$APP_DIR/venv"
 
 log() { echo "[dpm] $*"; }
 
-if ! command -v python3 >/dev/null || ! command -v git >/dev/null; then
-  if command -v apt-get >/dev/null; then
-    log "Installing system dependencies"
-    apt-get update
-    DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-venv python3-pip git openssh-client
-  else
-    echo "[dpm] Install Python 3, venv, pip, Git and OpenSSH first" >&2
+system_dependencies_ready() {
+  command -v python3 >/dev/null 2>&1 \
+    && command -v git >/dev/null 2>&1 \
+    && command -v ssh-keygen >/dev/null 2>&1 \
+    && python3 -c 'import venv, ensurepip' >/dev/null 2>&1
+}
+
+install_system_dependencies() {
+  if ! command -v apt-get >/dev/null 2>&1; then
+    echo "[dpm] Install Python 3 with venv/pip, Git and OpenSSH first" >&2
     exit 1
   fi
+
+  log "Installing system dependencies"
+  apt-get update
+  DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    python3 python3-venv python3-pip git openssh-client
+}
+
+ensure_virtual_environment() {
+  if [[ -x "$VENV_DIR/bin/python" ]] \
+    && "$VENV_DIR/bin/python" -m pip --version >/dev/null 2>&1; then
+    return
+  fi
+
+  if [[ -d "$VENV_DIR" ]]; then
+    log "Removing incomplete Python virtual environment"
+    rm -rf "$VENV_DIR"
+  fi
+
+  log "Creating Python virtual environment"
+  if ! python3 -m venv "$VENV_DIR"; then
+    install_system_dependencies
+    rm -rf "$VENV_DIR"
+    python3 -m venv "$VENV_DIR"
+  fi
+
+  if ! "$VENV_DIR/bin/python" -m pip --version >/dev/null 2>&1; then
+    echo "[dpm] Virtual environment was created without pip" >&2
+    exit 1
+  fi
+}
+
+if ! system_dependencies_ready; then
+  install_system_dependencies
 fi
 
 if ! id "$SERVICE_USER" >/dev/null 2>&1; then
@@ -37,12 +74,10 @@ tar -C "$SOURCE_DIR" \
   --exclude='.git' --exclude='venv' --exclude='__pycache__' --exclude='*.pyc' \
   -cf - . | tar -C "$APP_DIR" -xf -
 
-if [[ ! -x "$APP_DIR/venv/bin/python" ]]; then
-  python3 -m venv "$APP_DIR/venv"
-fi
+ensure_virtual_environment
 log "Installing Python dependencies"
-"$APP_DIR/venv/bin/pip" install --disable-pip-version-check --upgrade pip >/dev/null
-"$APP_DIR/venv/bin/pip" install --disable-pip-version-check -r "$APP_DIR/requirements.txt"
+"$VENV_DIR/bin/python" -m pip install --disable-pip-version-check --upgrade pip >/dev/null
+"$VENV_DIR/bin/python" -m pip install --disable-pip-version-check -r "$APP_DIR/requirements.txt"
 
 if [[ ! -f "$DATA_DIR/.ssh/id_ed25519" ]]; then
   log "Generating Git SSH key"
