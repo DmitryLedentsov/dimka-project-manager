@@ -9,6 +9,8 @@ fi
 SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_DIR="/opt/dimka-project-manager"
 VENV_DIR="$APP_DIR/venv"
+CONFIG_FILE="${DPM_CONFIG_FILE:-/etc/dpm/config.env}"
+SERVICE_USER="dpm"
 
 log() { echo "[dpm] $*"; }
 
@@ -66,6 +68,20 @@ log "Installing Python dependencies"
 
 chown -R root:root "$APP_DIR"
 chmod +x "$APP_DIR/install.sh" "$APP_DIR/update.sh" "$APP_DIR/uninstall.sh" "$APP_DIR/config.sh"
+
+# Repair installations made by early DPM versions where SQLite was created by
+# root during config.sh. The daemon itself runs as dpm and must own all mutable
+# runtime state, including database WAL/SHM files and checked-out repositories.
+if [[ -f "$CONFIG_FILE" ]]; then
+  # shellcheck disable=SC1090
+  source "$CONFIG_FILE"
+fi
+DATA_DIR="${DPM_DATA_DIR:-/var/lib/dpm}"
+LOG_DIR="${DPM_LOG_DIR:-/var/log/dpm}"
+RUN_DIR="/run/dpm"
+mkdir -p "$DATA_DIR/projects" "$DATA_DIR/.ssh" "$LOG_DIR" "$RUN_DIR"
+chown -R "$SERVICE_USER:$SERVICE_USER" "$DATA_DIR" "$LOG_DIR" "$RUN_DIR"
+
 systemctl daemon-reload
 systemctl restart dimka-project-manager.service
 
