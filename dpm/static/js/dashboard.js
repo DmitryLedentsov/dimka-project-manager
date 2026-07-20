@@ -1,129 +1,30 @@
 (function ($, DPM) {
   'use strict';
-  var refreshTimer=null;
-  var activeLogProject=null;
-  var activeLogName='';
-  var collapsed={};
-
-  function bytes(value){
-    var size=Number(value||0),units=['B','KB','MB','GB'],index=0;
-    while(size>=1024&&index<units.length-1){size/=1024;index++;}
-    return (index?size.toFixed(size>=10?0:1):Math.round(size))+' '+units[index];
-  }
-
-  function statePill(state){
-    state=String(state||'unknown');
-    return '<span class="status-pill '+DPM.statusClass(state)+'"><i></i><span>'+DPM.escape(state.replaceAll('_',' ').toUpperCase())+'</span></span>';
-  }
-
-  function componentRuntime(component){
-    if(component.component_type==='static'){
-      return '<strong>'+DPM.escape(bytes(component.size_bytes))+'</strong><small>'+DPM.escape(String(component.file_count||0))+' files</small>';
-    }
-    if(component.pid){
-      return '<strong>PID '+DPM.escape(component.pid)+'</strong><small>'+DPM.escape(component.memory_mb)+' MB · '+DPM.escape(DPM.formatUptime(component.uptime_seconds))+'</small>';
-    }
-    return '<strong>—</strong><small>inactive</small>';
-  }
-
-  function componentTarget(component){
-    if(component.component_type==='static'){
-      return '<strong>'+DPM.escape(component.target||'—')+'</strong><small>'+DPM.escape(component.url||component.source||'static publication')+'</small>';
-    }
-    return '<strong>'+DPM.escape(component.working_directory||'.')+'</strong><small>'+DPM.escape(DPM.shortSha(component.deployed_commit))+'</small>';
-  }
-
+  var refreshTimer=null,activeLogProject=null,activeLogName='',collapsed={};
+  function bytes(value){var size=Number(value||0),units=['B','KB','MB','GB'],index=0;while(size>=1024&&index<units.length-1){size/=1024;index++;}return (index?size.toFixed(size>=10?0:1):Math.round(size))+' '+units[index];}
+  function statePill(state){state=String(state||'unknown');return '<span class="status-pill '+DPM.statusClass(state)+'"><i></i><span>'+DPM.escape(state.replaceAll('_',' ').toUpperCase())+'</span></span>';}
+  function componentRuntime(component){if(component.component_type==='static')return '<strong>'+DPM.escape(bytes(component.size_bytes))+'</strong><small>'+DPM.escape(String(component.file_count||0))+' files</small>';if(component.pid)return '<strong>PID '+DPM.escape(component.pid)+'</strong><small>'+DPM.escape(component.memory_mb)+' MB · '+DPM.escape(DPM.formatUptime(component.uptime_seconds))+'</small>';return '<strong>—</strong><small>inactive</small>';}
+  function componentTarget(component){if(component.component_type==='static')return '<strong>'+DPM.escape(component.target||'—')+'</strong><small>'+DPM.escape(component.url||component.source||'static publication')+'</small>';return '<strong>'+DPM.escape(component.working_directory||'.')+'</strong><small>'+DPM.escape(DPM.shortSha(component.deployed_commit))+'</small>';}
   function componentControls(component){
-    var type=component.component_type||'process';
-    var running=component.status==='running'||component.status==='starting'||component.status==='unhealthy';
-    var ready=component.status==='ready'||component.status==='publishing';
-    var active=type==='static'?ready:running;
-    var startLabel=type==='static'?'Publish':'Start';
-    var stopLabel=type==='static'?'Unpublish':'Stop';
-    var restartLabel=type==='static'?'Republish':'Restart';
-    var primary=active
-      ? '<button class="mini-action js-component-action" data-id="'+component.id+'" data-action="stop">'+stopLabel+'</button>'
-      : '<button class="mini-action js-component-action" data-id="'+component.id+'" data-action="start">'+startLabel+'</button>';
-    var restart='<button class="mini-action js-component-action" data-id="'+component.id+'" data-action="restart" '+(active?'':'disabled')+'>'+restartLabel+'</button>';
+    var type=component.component_type||'process',running=component.status==='running'||component.status==='starting'||component.status==='unhealthy',ready=component.status==='ready'||component.status==='publishing',active=type==='static'?ready:running,projectStopped=component.project_desired_state==='stopped';
+    var startLabel=type==='static'?'Publish':'Start',stopLabel=type==='static'?'Unpublish':'Stop',restartLabel=type==='static'?'Republish':'Restart';
+    var primary=active?'<button class="mini-action js-component-action" data-id="'+component.id+'" data-action="stop">'+stopLabel+'</button>':'<button class="mini-action js-component-action" data-id="'+component.id+'" data-action="start" '+(projectStopped?'disabled title="Start the project first"':'')+'>'+startLabel+'</button>';
+    var restart='<button class="mini-action js-component-action" data-id="'+component.id+'" data-action="restart" '+((active&&!projectStopped)?'':'disabled')+'>'+restartLabel+'</button>';
     var open=type==='static'&&component.url?'<a class="mini-action" href="'+DPM.escape(component.url)+'" target="_blank" rel="noopener">Open</a>':'';
     return primary+restart+open+'<a class="mini-action icon-only" href="'+DPM.basePath+'/components/'+component.id+'">↗</a>';
   }
-
-  function componentRow(component,index,total){
-    var type=component.component_type==='static'?'WEB':'PROC';
-    var connector=index===total-1?'└':'├';
-    return '<div class="component-tree-row" data-search="'+DPM.escape((component.project_name+' '+component.name+' '+component.component_type).toLowerCase())+'">'
-      +'<div class="tree-name component-name"><span class="tree-connector">'+connector+'─</span><span class="component-type type-'+type.toLowerCase()+'">'+type+'</span><a href="'+DPM.basePath+'/components/'+component.id+'"><strong>'+DPM.escape(component.name)+'</strong><small>'+DPM.escape(component.component_type)+'</small></a></div>'
-      +'<div>'+statePill(component.status)+'</div>'
-      +'<div class="tree-value">'+componentTarget(component)+'</div>'
-      +'<div class="tree-value">'+componentRuntime(component)+'</div>'
-      +'<div class="row-actions component-actions">'+componentControls(component)+'</div>'
-      +'</div>';
-  }
-
+  function componentRow(component,index,total){var type=component.component_type==='static'?'WEB':'PROC',connector=index===total-1?'└':'├';return '<div class="component-tree-row" data-search="'+DPM.escape((component.project_name+' '+component.name+' '+component.component_type).toLowerCase())+'"><div class="tree-name component-name"><span class="tree-connector">'+connector+'─</span><span class="component-type type-'+type.toLowerCase()+'">'+type+'</span><a href="'+DPM.basePath+'/components/'+component.id+'"><strong>'+DPM.escape(component.name)+'</strong><small>'+DPM.escape(component.component_type)+'</small></a></div><div>'+statePill(component.status)+'</div><div class="tree-value">'+componentTarget(component)+'</div><div class="tree-value">'+componentRuntime(component)+'</div><div class="row-actions component-actions">'+componentControls(component)+'</div></div>';}
   function projectRow(project){
-    var isCollapsed=collapsed[project.id]===true;
-    var action=project.desired_state==='running'?'stop':'start';
-    var actionLabel=project.desired_state==='running'?'Stop':'Start';
-    var update=project.update_available?'<span class="update-badge">UPDATE</span>':'';
-    var html='<article class="project-tree-node '+(isCollapsed?'collapsed':'')+'" data-project="'+project.id+'" data-search="'+DPM.escape((project.name+' '+project.repository_url+' '+project.branch).toLowerCase())+'">'
-      +'<div class="project-tree-row">'
-      +'<div class="tree-name project-name"><button class="tree-toggle" data-project="'+project.id+'" type="button">'+(isCollapsed?'▸':'▾')+'</button><a href="'+DPM.basePath+'/projects/'+project.id+'"><strong>'+DPM.escape(project.name)+'</strong><small>'+DPM.escape(project.branch)+' · desired '+DPM.escape(project.desired_state)+'</small></a></div>'
-      +'<div>'+statePill(project.actual_state)+'</div>'
-      +'<div class="tree-value"><strong>'+DPM.escape(DPM.shortSha(project.deployed_commit))+' '+update+'</strong><small>'+DPM.escape(project.commit_message||project.repository_url)+'</small></div>'
-      +'<div class="tree-value"><strong>'+project.ready_count+'/'+project.component_count+' ready</strong><small>'+DPM.escape(project.last_deployed_at?DPM.formatDate(project.last_deployed_at):'never deployed')+'</small></div>'
-      +'<div class="row-actions project-actions"><button class="mini-action js-project-action" data-id="'+project.id+'" data-action="deploy">Deploy</button><button class="mini-action js-project-action" data-id="'+project.id+'" data-action="'+action+'">'+actionLabel+'</button><button class="mini-action js-project-action" data-id="'+project.id+'" data-action="redeploy">Redeploy</button><button class="mini-action js-project-log" data-project="'+project.id+'" data-name="'+DPM.escape(project.name)+'">Logs</button><a class="mini-action icon-only" href="'+DPM.basePath+'/projects/'+project.id+'">↗</a></div>'
-      +'</div><div class="component-tree-children">';
-    (project.components||[]).forEach(function(component,index){html+=componentRow(component,index,project.components.length);});
-    if(!(project.components||[]).length)html+='<div class="component-tree-empty">Manifest components will appear after checkout.</div>';
-    return html+'</div></article>';
+    var isCollapsed=collapsed[project.id]===true,action=project.desired_state==='running'?'stop':'start',actionLabel=project.desired_state==='running'?'Stop':'Start',update=project.update_available?'<span class="update-badge">UPDATE</span>':'';
+    var html='<article class="project-tree-node '+(isCollapsed?'collapsed':'')+'" data-project="'+project.id+'" data-search="'+DPM.escape((project.name+' '+project.repository_url+' '+project.branch).toLowerCase())+'"><div class="project-tree-row"><div class="tree-name project-name"><button class="tree-toggle" data-project="'+project.id+'" type="button">'+(isCollapsed?'▸':'▾')+'</button><a href="'+DPM.basePath+'/projects/'+project.id+'"><strong>'+DPM.escape(project.name)+'</strong><small>'+DPM.escape(project.branch)+' · desired '+DPM.escape(project.desired_state)+'</small></a></div><div>'+statePill(project.actual_state)+'</div><div class="tree-value"><strong>'+DPM.escape(DPM.shortSha(project.deployed_commit))+' '+update+'</strong><small>'+DPM.escape(project.commit_message||project.repository_url)+'</small></div><div class="tree-value"><strong>'+project.ready_count+'/'+project.component_count+' ready</strong><small>'+DPM.escape(project.last_deployed_at?DPM.formatDate(project.last_deployed_at):'never deployed')+'</small></div><div class="row-actions project-actions"><button class="mini-action js-project-action" data-id="'+project.id+'" data-action="deploy">Deploy</button><button class="mini-action js-project-action" data-id="'+project.id+'" data-action="'+action+'">'+actionLabel+'</button><button class="mini-action js-project-action" data-id="'+project.id+'" data-action="redeploy">Redeploy</button><button class="mini-action js-project-log" data-project="'+project.id+'" data-name="'+DPM.escape(project.name)+'">Logs</button><a class="mini-action icon-only" href="'+DPM.basePath+'/projects/'+project.id+'">↗</a></div></div><div class="component-tree-children">';
+    (project.components||[]).forEach(function(component,index){html+=componentRow(component,index,project.components.length);});if(!(project.components||[]).length)html+='<div class="component-tree-empty">Manifest components will appear after checkout.</div>';return html+'</div></article>';
   }
-
-  function render(data){
-    $('#metric-projects').text(data.stats.projects);
-    $('#metric-components').text(data.stats.components);
-    $('#metric-ready').text(data.stats.ready);
-    $('#metric-attention').text(data.stats.attention);
-    var $tree=$('#project-tree').empty();
-    data.projects.forEach(function(project){$tree.append(projectRow(project));});
-    $('#empty-projects').toggleClass('hidden',data.projects.length>0);
-    $('#project-tree').toggleClass('hidden',data.projects.length===0);
-    var deploying=data.projects.filter(function(project){return project.deploying||project.actual_state==='deploying';});
-    if(deploying.length){
-      var active=deploying[0];
-      $('#active-alert-title').text('Deploying '+active.name);
-      $('#active-alert-copy').text(String(active.deploy_stage||'working').replaceAll('_',' ')+' · '+DPM.shortSha(active.remote_commit));
-      $('#active-alert').removeClass('hidden');
-    }else $('#active-alert').addClass('hidden');
-    applyFilter();
-  }
-
-  function loadDashboard(silent){
-    if(!silent)$('#refresh-dashboard').addClass('rotating');
-    DPM.api('GET','/dashboard').done(render).always(function(){$('#refresh-dashboard').removeClass('rotating');});
-  }
-
-  function applyFilter(){
-    var query=String($('#global-filter').val()||'').toLowerCase().trim();
-    $('.project-tree-node').each(function(){
-      var $project=$(this),projectMatch=String($project.data('search')).indexOf(query)!==-1,childMatch=false;
-      $project.find('.component-tree-row').each(function(){var match=!query||String($(this).data('search')).indexOf(query)!==-1;$(this).toggle(match);childMatch=childMatch||match;});
-      $project.toggle(!query||projectMatch||childMatch);
-    });
-  }
-
-  function loadProjectLog(projectId,projectName,open){
-    activeLogProject=Number(projectId);activeLogName=projectName||('project '+projectId);
-    $('#deployment-log-title').text(activeLogName+' deployment');$('#deployment-log-meta').text('PROJECT '+activeLogProject+' / LATEST ATTEMPT');
-    if(open){$('#deployment-log-console').text('Loading deployment log...');DPM.openModal('#deployment-log-modal');}
-    DPM.api('GET','/projects/'+activeLogProject+'/logs?lines=1000').done(function(data){$('#deployment-log-console').text(data.logs||'Deployment log is empty.');var node=$('#deployment-log-console').get(0);if(node)node.scrollTop=node.scrollHeight;});
-  }
-
+  function render(data){$('#metric-projects').text(data.stats.projects);$('#metric-components').text(data.stats.components);$('#metric-ready').text(data.stats.ready);$('#metric-attention').text(data.stats.attention);var $tree=$('#project-tree').empty();data.projects.forEach(function(project){$tree.append(projectRow(project));});$('#empty-projects').toggleClass('hidden',data.projects.length>0);$('#project-tree').toggleClass('hidden',data.projects.length===0);var deploying=data.projects.filter(function(project){return project.deploying||project.actual_state==='deploying';});if(deploying.length){var active=deploying[0];$('#active-alert-title').text('Deploying '+active.name);$('#active-alert-copy').text(String(active.deploy_stage||'working').replaceAll('_',' ')+' · '+DPM.shortSha(active.remote_commit));$('#active-alert').removeClass('hidden');}else $('#active-alert').addClass('hidden');applyFilter();}
+  function loadDashboard(silent){if(!silent)$('#refresh-dashboard').addClass('rotating');DPM.api('GET','/dashboard').done(render).always(function(){$('#refresh-dashboard').removeClass('rotating');});}
+  function applyFilter(){var query=String($('#global-filter').val()||'').toLowerCase().trim();$('.project-tree-node').each(function(){var $project=$(this),projectMatch=String($project.data('search')).indexOf(query)!==-1,childMatch=false;$project.find('.component-tree-row').each(function(){var match=!query||String($(this).data('search')).indexOf(query)!==-1;$(this).toggle(match);childMatch=childMatch||match;});$project.toggle(!query||projectMatch||childMatch);});}
+  function loadProjectLog(projectId,projectName,open){activeLogProject=Number(projectId);activeLogName=projectName||('project '+projectId);$('#deployment-log-title').text(activeLogName+' deployment');$('#deployment-log-meta').text('PROJECT '+activeLogProject+' / LATEST ATTEMPT');if(open){$('#deployment-log-console').text('Loading deployment log...');DPM.openModal('#deployment-log-modal');}DPM.api('GET','/projects/'+activeLogProject+'/logs?lines=1000').done(function(data){$('#deployment-log-console').text(data.logs||'Deployment log is empty.');var node=$('#deployment-log-console').get(0);if(node)node.scrollTop=node.scrollHeight;});}
   $(document).on('click','.tree-toggle',function(){var id=Number($(this).data('project'));collapsed[id]=!collapsed[id];$(this).closest('.project-tree-node').toggleClass('collapsed',collapsed[id]);$(this).text(collapsed[id]?'▸':'▾');});
   $(document).on('click','.js-project-action',function(){var $button=$(this).prop('disabled',true),action=$button.data('action');DPM.api('POST','/projects/'+$button.data('id')+'/'+action,{}).done(function(){DPM.toast('Project '+action+' accepted','success');setTimeout(function(){loadDashboard(true);},300);}).always(function(){$button.prop('disabled',false);});});
   $(document).on('click','.js-component-action',function(){var $button=$(this).prop('disabled',true),action=$button.data('action');DPM.api('POST','/components/'+$button.data('id')+'/'+action,{}).done(function(){DPM.toast('Component '+action+' completed','success');loadDashboard(true);}).always(function(){$button.prop('disabled',false);});});
-  $(document).on('click','.js-project-log',function(){loadProjectLog($(this).data('project'),String($(this).data('name')||''),true);});
-  $('#deployment-log-refresh').on('click',function(){if(activeLogProject)loadProjectLog(activeLogProject,activeLogName,false);});
-  $('#refresh-dashboard').on('click',function(){loadDashboard(false);});$('#global-filter').on('input',applyFilter);$(document).on('dpm:project-added',function(){setTimeout(function(){loadDashboard(true);},350);});
-  loadDashboard(true);refreshTimer=setInterval(function(){loadDashboard(true);},4000);$(window).on('beforeunload',function(){clearInterval(refreshTimer);});
+  $(document).on('click','.js-project-log',function(){loadProjectLog($(this).data('project'),String($(this).data('name')||''),true);});$('#deployment-log-refresh').on('click',function(){if(activeLogProject)loadProjectLog(activeLogProject,activeLogName,false);});$('#refresh-dashboard').on('click',function(){loadDashboard(false);});$('#global-filter').on('input',applyFilter);$(document).on('dpm:project-added',function(){setTimeout(function(){loadDashboard(true);},350);});loadDashboard(true);refreshTimer=setInterval(function(){loadDashboard(true);},4000);$(window).on('beforeunload',function(){clearInterval(refreshTimer);});
 })(window.jQuery, window.DPM);
