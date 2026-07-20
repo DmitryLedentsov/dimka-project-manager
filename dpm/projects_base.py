@@ -5,10 +5,10 @@ import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any
 
+from .components import ComponentError, ComponentManager
 from .config import Settings
 from .db import Database
 from .gitops import GitError, GitRepository
-from .supervisor import ServiceSupervisor
 from .utils import repository_name, slugify, utc_now
 
 
@@ -22,12 +22,13 @@ class ProjectManagerBase:
         settings: Settings,
         db: Database,
         git: GitRepository,
-        supervisor: ServiceSupervisor,
+        components: ComponentManager,
     ) -> None:
         self.settings = settings
         self.db = db
         self.git = git
-        self.supervisor = supervisor
+        self.components = components
+        self.supervisor = components  # compatibility for older internal calls
         self._executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="dpm-deploy")
         self._locks: dict[int, threading.Lock] = {}
         self._futures: dict[int, Future[Any]] = {}
@@ -60,8 +61,8 @@ class ProjectManagerBase:
                 """
                 INSERT INTO projects (
                     name, repository_url, branch, repo_path, auto_update,
-                    poll_interval, deploy_status, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?)
+                    poll_interval, desired_state, deploy_status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 'running', 'queued', ?, ?)
                 """,
                 [
                     project_name,
@@ -95,22 +96,70 @@ class ProjectManagerBase:
         return [self.enrich_project(project) for project in projects]
 
     def enrich_project(self, project: dict[str, Any]) -> dict[str, Any]:
-        project = dict(project)
-        project["auto_update"] = bool(project.get("auto_update"))
-        project["service_count"] = self.db.fetchone(
-            "SELECT COUNT(*) AS count FROM services WHERE project_id = ?", [project["id"]]
-        )["count"]
-        project["running_count"] = self.db.fetchone(
-            "SELECT COUNT(*) AS count FROM services WHERE project_id = ? AND status = 'running'",
-            [project["id"]],
-        )["count"]
-        project["deploying"] = self.is_busy(int(project["id"]))
+        item = dict(project)
+        item["auto_update"] = bool(item.get("auto_update"))
+        item["desired_state"] = str(item.get("desired_state") or "running")
+        components = self.components.list_components(int(item["id"]))
+        summary = self.components.project_summary(int(item["id"]))
+        item["components"] = components
+        item["component_count"] = summary["total"]
+        item["ready_count"] = summary["ready"]
+        item["failed_count"] = summary["failed"]
+        # Compatibility fields consumed by the initial CLI/UI generation.
+        item["service_count"] = summary["total"]
+        item["running_count"] = summary["ready"]
+        item["deploying"] = self.is_busy(int(item["id"]))
+        item["update_available"] = bool(
+            item.get("remote_commit")
+            and item.get("remote_commit") != item.get("deployed_commit")
+        )
         latest = self.db.fetchone(
             "SELECT * FROM deployments WHERE project_id = ? ORDER BY id DESC LIMIT 1",
-            [project["id"]],
+            [item["id"]],
         )
-        project["latest_deployment"] = latest
-        return project
+        item["latest_deployment"] = latest
+
+        if item["deploying"] or item.get("deploy_status") == "deploying":
+            actual_state = "deploying"
+        elif item.get("deploy_status") in {"failed", "check_failed"}:
+            actual_state = "failed"
+        elif summary["failed"]:
+            actual_state = "degraded"
+        elif item["desired_state"] == "stopped" and summary["ready"] == 0:
+            actual_state = "stopped"
+        elif summary["total"] and summary["ready"] == summary["total"]:
+            actual_state = "running"
+        elif summary["total"] == 0:
+            actual_state = "empty"
+        else:
+            actual_state = "degraded"
+        item["actual_state"] = actual_state
+        return item
+
+    def start_project(self, project_id: int) -> dict[str, Any]:
+        project = self.get_project(project_id)
+        if not project.get("deployed_commit"):
+            raise ProjectError("Project has not been deployed successfully yet")
+        self.db.update(
+            "projects",
+            project_id,
+            {"desired_state": "running", "updated_at": utc_now()},
+        )
+        try:
+            self.components.start_project(project_id)
+        except ComponentError as exc:
+            raise ProjectError(str(exc)) from exc
+        return self.get_project(project_id)
+
+    def stop_project(self, project_id: int) -> dict[str, Any]:
+        self.get_project(project_id)
+        self.db.update(
+            "projects",
+            project_id,
+            {"desired_state": "stopped", "updated_at": utc_now()},
+        )
+        self.components.stop_project(project_id)
+        return self.get_project(project_id)
 
     def is_busy(self, project_id: int) -> bool:
         with self._guard:
@@ -181,5 +230,4 @@ class ProjectManagerBase:
                 and remote_sha != project.get("attempted_commit")
             )
         if should_deploy:
-            # Run directly in the same worker; schedule_check already owns the project slot.
             self.deploy_project(project_id, "new commit", force_deploy, known_remote=remote_sha)
