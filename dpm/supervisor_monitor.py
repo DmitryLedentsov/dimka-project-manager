@@ -7,7 +7,11 @@ class MonitoringMixin:
     def _monitor_loop(self) -> None:
         while not self._stop_event.wait(2):
             services = self.db.fetchall(
-                "SELECT * FROM services WHERE status IN ('running','starting','unhealthy')"
+                """
+                SELECT * FROM services
+                 WHERE component_type = 'process'
+                   AND status IN ('running','starting','unhealthy')
+                """
             )
             for service in services:
                 service_id = int(service["id"])
@@ -36,6 +40,5 @@ class MonitoringMixin:
                     },
                 )
 
-                # A crashed service remains FAILED until the operator explicitly
-                # presses Start/Restart or a later successful project deployment
-                # starts it. DPM never hides a failure behind automatic retries.
+                # A crashed process remains FAILED until the operator explicitly
+                # starts/restarts it or a later successful deployment starts it.
