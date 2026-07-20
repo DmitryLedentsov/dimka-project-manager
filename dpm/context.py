@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .components import ComponentManager
 from .config import Settings
 from .db import Database
 from .gitops import GitRepository
@@ -14,9 +15,14 @@ from .supervisor import ServiceSupervisor
 class DpmContext:
     settings: Settings
     db: Database
-    supervisor: ServiceSupervisor
+    components: ComponentManager
     projects: ProjectManager
     scheduler: UpdateScheduler
+
+    @property
+    def supervisor(self) -> ComponentManager:
+        """Compatibility alias for the first public DPM API."""
+        return self.components
 
     @classmethod
     def create(cls, settings: Settings, *, start_background: bool = True) -> "DpmContext":
@@ -24,16 +30,17 @@ class DpmContext:
         settings.projects_dir.mkdir(parents=True, exist_ok=True)
         settings.log_dir.mkdir(parents=True, exist_ok=True)
         db = Database(settings.database_path)
-        supervisor = ServiceSupervisor(db)
-        projects = ProjectManager(settings, db, GitRepository(), supervisor)
+        process_supervisor = ServiceSupervisor(db)
+        components = ComponentManager(settings, db, process_supervisor)
+        projects = ProjectManager(settings, db, GitRepository(), components)
         scheduler = UpdateScheduler(db, projects)
-        context = cls(settings, db, supervisor, projects, scheduler)
+        context = cls(settings, db, components, projects, scheduler)
         if start_background:
-            supervisor.start_monitoring()
+            components.start_monitoring()
             scheduler.start()
         return context
 
     def shutdown(self) -> None:
         self.scheduler.shutdown()
         self.projects.shutdown()
-        self.supervisor.shutdown()
+        self.components.shutdown()
