@@ -1,0 +1,31 @@
+(function ($, DPM) {
+  'use strict';
+  var projectId=Number($('#project-id').val()),projectTimer=null,logTimer=null,lastLog=null;
+
+  function bytes(value){var size=Number(value||0),units=['B','KB','MB','GB'],i=0;while(size>=1024&&i<units.length-1){size/=1024;i++;}return (i?size.toFixed(size>=10?0:1):Math.round(size))+' '+units[i];}
+  function componentCard(component){
+    var type=component.component_type==='static'?'WEB':'PROC';
+    var active=component.component_type==='static'?(component.status==='ready'||component.status==='publishing'):(component.status==='running'||component.status==='starting'||component.status==='unhealthy');
+    var startLabel=component.component_type==='static'?'Publish':'Start';
+    var stopLabel=component.component_type==='static'?'Unpublish':'Stop';
+    var runtime=component.component_type==='static'?(bytes(component.size_bytes)+' · '+(component.file_count||0)+' files'):(component.pid?'PID '+component.pid+' · '+component.memory_mb+' MB':'inactive');
+    return '<article class="project-component-card"><div class="component-card-type type-'+type.toLowerCase()+'">'+type+'</div><div class="component-card-copy"><a href="'+DPM.basePath+'/components/'+component.id+'"><strong>'+DPM.escape(component.name)+'</strong></a><span>'+DPM.escape(component.component_type)+' · '+DPM.escape(runtime)+'</span></div><div class="status-pill '+DPM.statusClass(component.status)+'"><i></i><span>'+DPM.escape(String(component.status).toUpperCase())+'</span></div><div class="row-actions"><button class="mini-action js-component-action" data-id="'+component.id+'" data-action="'+(active?'stop':'start')+'">'+(active?stopLabel:startLabel)+'</button><button class="mini-action js-component-action" data-id="'+component.id+'" data-action="restart" '+(active?'':'disabled')+'>'+(component.component_type==='static'?'Republish':'Restart')+'</button><a class="mini-action icon-only" href="'+DPM.basePath+'/components/'+component.id+'">↗</a></div></article>';
+  }
+
+  function render(data){
+    var project=data.project;
+    $('#project-name').text(project.name);$('#project-subtitle').text(project.last_error||project.repository_url);$('#project-status').attr('class','status-pill '+DPM.statusClass(project.actual_state)+' infra-status-large').find('span').text(String(project.actual_state).toUpperCase());
+    $('#repo-url').text(project.repository_url);$('#repo-branch').text(project.branch);$('#repo-deployed').text(project.deployed_commit||'—');$('#repo-remote').text(project.remote_commit||'—');$('#repo-last-deploy').text(DPM.formatDate(project.last_deployed_at));$('#repo-message').text(project.commit_message||'—');
+    $('#auto-update').prop('checked',!!project.auto_update);$('#desired-state').text(String(project.desired_state).toUpperCase());$('#summary-total').text(project.component_count);$('#summary-ready').text(project.ready_count);$('#summary-failed').text(project.failed_count);$('#summary-update').text(project.update_available?'YES':'NO');$('#deploy-status').text(project.deploy_status||'—');$('#deploy-stage').text(project.deploy_stage||'—');$('#project-error').text(project.last_error||'—');
+    $('#project-start').prop('disabled',project.desired_state==='running'||project.deploying);$('#project-stop').prop('disabled',project.desired_state==='stopped'||project.deploying);$('[data-project-action=deploy],[data-project-action=redeploy]').prop('disabled',project.deploying);
+    var $list=$('#project-components').empty();(project.components||[]).forEach(function(component){$list.append(componentCard(component));});if(!(project.components||[]).length)$list.html('<div class="component-tree-empty">No components registered yet.</div>');
+  }
+
+  function loadProject(){DPM.api('GET','/projects/'+projectId).done(render);}
+  function loadLog(force){DPM.api('GET','/projects/'+projectId+'/logs?lines=700').done(function(data){if(data.logs===lastLog)return;lastLog=data.logs;var node=$('#project-log-console').get(0);$('#project-log-console').text(data.logs||'No deployment log yet.');if(force||$('#follow-project-log').is(':checked'))node.scrollTop=node.scrollHeight;});}
+  function projectAction(action){var $buttons=$('[data-project-action]').prop('disabled',true);DPM.api('POST','/projects/'+projectId+'/'+action,{}).done(function(){DPM.toast('Project '+action+' accepted','success');setTimeout(loadProject,300);}).always(function(){$buttons.prop('disabled',false);});}
+  $(document).on('click','[data-project-action]',function(){projectAction($(this).data('project-action'));});
+  $(document).on('click','.js-component-action',function(){var $button=$(this).prop('disabled',true),action=$button.data('action');DPM.api('POST','/components/'+$button.data('id')+'/'+action,{}).done(function(){DPM.toast('Component '+action+' completed','success');loadProject();}).always(function(){$button.prop('disabled',false);});});
+  $('#check-project').on('click',function(){DPM.api('POST','/projects/'+projectId+'/check',{}).done(function(){DPM.toast('Repository check queued','success');});});$('#auto-update').on('change',function(){DPM.api('PATCH','/projects/'+projectId,{auto_update:$(this).is(':checked')}).done(function(){DPM.toast('Project setting saved','success');});});$('#refresh-project-log').on('click',function(){loadLog(true);});$('#delete-project').on('click',function(){if(!window.confirm('Stop and permanently remove this project from DPM?'))return;DPM.api('DELETE','/projects/'+projectId).done(function(){window.location.href=DPM.basePath+'/';});});
+  loadProject();loadLog(true);projectTimer=setInterval(loadProject,3500);logTimer=setInterval(function(){if($('#follow-project-log').is(':checked'))loadLog(false);},2500);$(window).on('beforeunload',function(){clearInterval(projectTimer);clearInterval(logTimer);});
+})(window.jQuery, window.DPM);
