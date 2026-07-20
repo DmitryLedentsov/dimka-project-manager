@@ -3,58 +3,98 @@
   var refreshTimer=null;
   var activeLogProject=null;
   var activeLogName='';
+  var collapsed={};
 
-  function serviceRow(service){
-    var status=service.status||'unknown';
-    var firstDeployment=!service.deployed_commit&&status!=='running';
-    var deploymentWorking=firstDeployment&&(service.deploy_status==='deploying'||service.deploy_status==='queued');
-    var initialBuildFailed=firstDeployment&&service.deploy_status==='failed';
-    var displayStatus=initialBuildFailed?'build_failed':deploymentWorking?(service.deploy_stage||service.deploy_status):status;
-    var error=service.last_error||service.project_error;
-    var runtime=service.pid?DPM.formatUptime(service.uptime_seconds)+'<small>'+DPM.escape(service.memory_mb)+' MB</small>':'—';
-    var control;
-    if(initialBuildFailed){
-      control='<button class="mini-action js-project-log" data-project="'+service.project_id+'" data-name="'+DPM.escape(service.project_name)+'">Logs</button>';
-    }else if(deploymentWorking){
-      control='<button class="mini-action" disabled>Deploying</button>';
-    }else{
-      var action=status==='running'?'stop':'start';
-      var actionLabel=status==='running'?'Stop':'Start';
-      control='<button class="mini-action js-service-action" data-id="'+service.id+'" data-action="'+action+'">'+actionLabel+'</button><a class="mini-action icon-only" href="'+DPM.basePath+'/services/'+service.id+'">↗</a>';
-    }
-    return '<tr class="service-row" data-search="'+DPM.escape((service.project_name+' '+service.name+' '+service.repository_url).toLowerCase())+'"><td><a class="service-identity" href="'+DPM.basePath+'/services/'+service.id+'"><span class="service-glyph"><i></i><i></i></span><span><strong>'+DPM.escape(service.name)+'</strong><small>'+DPM.escape(service.project_name)+'</small></span></a></td><td><span class="status-pill '+DPM.statusClass(displayStatus)+'"><i></i><span>'+DPM.escape(String(displayStatus).replaceAll('_',' ').toUpperCase())+'</span></span>'+(error?'<span class="row-error" title="'+DPM.escape(error)+'">!</span>':'')+'</td><td><div class="repo-cell"><strong>'+DPM.escape(service.branch)+'</strong><small>'+DPM.escape(service.repository_url)+'</small></div></td><td><code class="commit-chip">'+DPM.shortSha(service.deployed_commit)+'</code></td><td><div class="runtime-cell">'+runtime+'</div></td><td><div class="row-actions">'+control+'</div></td></tr>';
+  function bytes(value){
+    var size=Number(value||0),units=['B','KB','MB','GB'],index=0;
+    while(size>=1024&&index<units.length-1){size/=1024;index++;}
+    return (index?size.toFixed(size>=10?0:1):Math.round(size))+' '+units[index];
   }
 
-  function issueCard(project){
-    return '<article class="issue-card"><div class="issue-symbol">!</div><div><strong>'+DPM.escape(project.name)+'</strong><span>'+DPM.escape(project.deploy_stage||project.deploy_status)+'</span><p>'+DPM.escape(project.last_error||'Deployment failed')+'</p></div><div class="issue-actions"><button class="mini-action js-project-log" data-project="'+project.id+'" data-name="'+DPM.escape(project.name)+'">Logs</button><button class="mini-action js-project-deploy" data-id="'+project.id+'">Retry</button></div></article>';
+  function statePill(state){
+    state=String(state||'unknown');
+    return '<span class="status-pill '+DPM.statusClass(state)+'"><i></i><span>'+DPM.escape(state.replaceAll('_',' ').toUpperCase())+'</span></span>';
+  }
+
+  function componentRuntime(component){
+    if(component.component_type==='static'){
+      return '<strong>'+DPM.escape(bytes(component.size_bytes))+'</strong><small>'+DPM.escape(String(component.file_count||0))+' files</small>';
+    }
+    if(component.pid){
+      return '<strong>PID '+DPM.escape(component.pid)+'</strong><small>'+DPM.escape(component.memory_mb)+' MB · '+DPM.escape(DPM.formatUptime(component.uptime_seconds))+'</small>';
+    }
+    return '<strong>—</strong><small>inactive</small>';
+  }
+
+  function componentTarget(component){
+    if(component.component_type==='static'){
+      return '<strong>'+DPM.escape(component.target||'—')+'</strong><small>'+DPM.escape(component.url||component.source||'static publication')+'</small>';
+    }
+    return '<strong>'+DPM.escape(component.working_directory||'.')+'</strong><small>'+DPM.escape(DPM.shortSha(component.deployed_commit))+'</small>';
+  }
+
+  function componentControls(component){
+    var type=component.component_type||'process';
+    var running=component.status==='running'||component.status==='starting'||component.status==='unhealthy';
+    var ready=component.status==='ready'||component.status==='publishing';
+    var active=type==='static'?ready:running;
+    var startLabel=type==='static'?'Publish':'Start';
+    var stopLabel=type==='static'?'Unpublish':'Stop';
+    var restartLabel=type==='static'?'Republish':'Restart';
+    var primary=active
+      ? '<button class="mini-action js-component-action" data-id="'+component.id+'" data-action="stop">'+stopLabel+'</button>'
+      : '<button class="mini-action js-component-action" data-id="'+component.id+'" data-action="start">'+startLabel+'</button>';
+    var restart='<button class="mini-action js-component-action" data-id="'+component.id+'" data-action="restart" '+(active?'':'disabled')+'>'+restartLabel+'</button>';
+    var open=type==='static'&&component.url?'<a class="mini-action" href="'+DPM.escape(component.url)+'" target="_blank" rel="noopener">Open</a>':'';
+    return primary+restart+open+'<a class="mini-action icon-only" href="'+DPM.basePath+'/components/'+component.id+'">↗</a>';
+  }
+
+  function componentRow(component,index,total){
+    var type=component.component_type==='static'?'WEB':'PROC';
+    var connector=index===total-1?'└':'├';
+    return '<div class="component-tree-row" data-search="'+DPM.escape((component.project_name+' '+component.name+' '+component.component_type).toLowerCase())+'">'
+      +'<div class="tree-name component-name"><span class="tree-connector">'+connector+'─</span><span class="component-type type-'+type.toLowerCase()+'">'+type+'</span><a href="'+DPM.basePath+'/components/'+component.id+'"><strong>'+DPM.escape(component.name)+'</strong><small>'+DPM.escape(component.component_type)+'</small></a></div>'
+      +'<div>'+statePill(component.status)+'</div>'
+      +'<div class="tree-value">'+componentTarget(component)+'</div>'
+      +'<div class="tree-value">'+componentRuntime(component)+'</div>'
+      +'<div class="row-actions component-actions">'+componentControls(component)+'</div>'
+      +'</div>';
+  }
+
+  function projectRow(project){
+    var isCollapsed=collapsed[project.id]===true;
+    var action=project.desired_state==='running'?'stop':'start';
+    var actionLabel=project.desired_state==='running'?'Stop':'Start';
+    var update=project.update_available?'<span class="update-badge">UPDATE</span>':'';
+    var html='<article class="project-tree-node '+(isCollapsed?'collapsed':'')+'" data-project="'+project.id+'" data-search="'+DPM.escape((project.name+' '+project.repository_url+' '+project.branch).toLowerCase())+'">'
+      +'<div class="project-tree-row">'
+      +'<div class="tree-name project-name"><button class="tree-toggle" data-project="'+project.id+'" type="button">'+(isCollapsed?'▸':'▾')+'</button><a href="'+DPM.basePath+'/projects/'+project.id+'"><strong>'+DPM.escape(project.name)+'</strong><small>'+DPM.escape(project.branch)+' · desired '+DPM.escape(project.desired_state)+'</small></a></div>'
+      +'<div>'+statePill(project.actual_state)+'</div>'
+      +'<div class="tree-value"><strong>'+DPM.escape(DPM.shortSha(project.deployed_commit))+' '+update+'</strong><small>'+DPM.escape(project.commit_message||project.repository_url)+'</small></div>'
+      +'<div class="tree-value"><strong>'+project.ready_count+'/'+project.component_count+' ready</strong><small>'+DPM.escape(project.last_deployed_at?DPM.formatDate(project.last_deployed_at):'never deployed')+'</small></div>'
+      +'<div class="row-actions project-actions"><button class="mini-action js-project-action" data-id="'+project.id+'" data-action="deploy">Deploy</button><button class="mini-action js-project-action" data-id="'+project.id+'" data-action="'+action+'">'+actionLabel+'</button><button class="mini-action js-project-action" data-id="'+project.id+'" data-action="redeploy">Redeploy</button><button class="mini-action js-project-log" data-project="'+project.id+'" data-name="'+DPM.escape(project.name)+'">Logs</button><a class="mini-action icon-only" href="'+DPM.basePath+'/projects/'+project.id+'">↗</a></div>'
+      +'</div><div class="component-tree-children">';
+    (project.components||[]).forEach(function(component,index){html+=componentRow(component,index,project.components.length);});
+    if(!(project.components||[]).length)html+='<div class="component-tree-empty">Manifest components will appear after checkout.</div>';
+    return html+'</div></article>';
   }
 
   function render(data){
-    $('#metric-services').text(data.stats.services);
-    $('#metric-running').text(data.stats.running);
-    var failedProjectIds={};
-    data.issues.forEach(function(project){failedProjectIds[project.id]=true;});
-    var independentServiceFailures=data.services.filter(function(service){return (service.status==='failed'||service.status==='unhealthy')&&!failedProjectIds[service.project_id];}).length;
-    $('#metric-failed').text(data.issues.length+independentServiceFailures);
-    $('#metric-projects').text(data.projects.length);
-    var health=data.stats.services?Math.round((data.stats.running/data.stats.services)*100):100;
-    $('#health-percent').text(health+'%');
-    var $body=$('#services-body').empty();
-    data.services.forEach(function(service){$body.append(serviceRow(service));});
-    $('#empty-services').toggleClass('hidden',data.services.length>0);
-    $('.service-table').toggleClass('hidden',data.services.length===0);
-    var deploying=data.projects.filter(function(project){return project.deploying||project.deploy_status==='deploying';});
+    $('#metric-projects').text(data.stats.projects);
+    $('#metric-components').text(data.stats.components);
+    $('#metric-ready').text(data.stats.ready);
+    $('#metric-attention').text(data.stats.attention);
+    var $tree=$('#project-tree').empty();
+    data.projects.forEach(function(project){$tree.append(projectRow(project));});
+    $('#empty-projects').toggleClass('hidden',data.projects.length>0);
+    $('#project-tree').toggleClass('hidden',data.projects.length===0);
+    var deploying=data.projects.filter(function(project){return project.deploying||project.actual_state==='deploying';});
     if(deploying.length){
       var active=deploying[0];
       $('#active-alert-title').text('Deploying '+active.name);
-      $('#active-alert-copy').text((active.deploy_stage||'working').replaceAll('_',' ')+' · '+DPM.shortSha(active.remote_commit));
+      $('#active-alert-copy').text(String(active.deploy_stage||'working').replaceAll('_',' ')+' · '+DPM.shortSha(active.remote_commit));
       $('#active-alert').removeClass('hidden');
-    }else{
-      $('#active-alert').addClass('hidden');
-    }
-    var $issues=$('#issues-list').empty();
-    data.issues.forEach(function(project){$issues.append(issueCard(project));});
-    $('#issues-panel').toggleClass('hidden',data.issues.length===0);
+    }else $('#active-alert').addClass('hidden');
     applyFilter();
   }
 
@@ -65,47 +105,25 @@
 
   function applyFilter(){
     var query=String($('#global-filter').val()||'').toLowerCase().trim();
-    $('.service-row').each(function(){$(this).toggle(!query||String($(this).data('search')).indexOf(query)!==-1);});
-  }
-
-  function loadProjectLog(projectId,projectName,open){
-    activeLogProject=Number(projectId);
-    activeLogName=projectName||('project '+projectId);
-    $('#deployment-log-title').text(activeLogName+' deployment');
-    $('#deployment-log-meta').text('PROJECT '+activeLogProject+' / LATEST ATTEMPT');
-    if(open){
-      $('#deployment-log-console').text('Loading deployment log...');
-      DPM.openModal('#deployment-log-modal');
-    }
-    DPM.api('GET','/projects/'+activeLogProject+'/logs?lines=1000').done(function(data){
-      $('#deployment-log-console').text(data.logs||'Deployment log is empty.');
-      var node=$('#deployment-log-console').get(0);
-      if(node)node.scrollTop=node.scrollHeight;
+    $('.project-tree-node').each(function(){
+      var $project=$(this),projectMatch=String($project.data('search')).indexOf(query)!==-1,childMatch=false;
+      $project.find('.component-tree-row').each(function(){var match=!query||String($(this).data('search')).indexOf(query)!==-1;$(this).toggle(match);childMatch=childMatch||match;});
+      $project.toggle(!query||projectMatch||childMatch);
     });
   }
 
-  $(document).on('click','.js-service-action',function(event){
-    event.preventDefault();
-    var $button=$(this).prop('disabled',true);
-    DPM.api('POST','/services/'+$button.data('id')+'/'+$button.data('action'),{}).done(function(){DPM.toast('Service command completed','success');loadDashboard(true);}).always(function(){$button.prop('disabled',false);});
-  });
+  function loadProjectLog(projectId,projectName,open){
+    activeLogProject=Number(projectId);activeLogName=projectName||('project '+projectId);
+    $('#deployment-log-title').text(activeLogName+' deployment');$('#deployment-log-meta').text('PROJECT '+activeLogProject+' / LATEST ATTEMPT');
+    if(open){$('#deployment-log-console').text('Loading deployment log...');DPM.openModal('#deployment-log-modal');}
+    DPM.api('GET','/projects/'+activeLogProject+'/logs?lines=1000').done(function(data){$('#deployment-log-console').text(data.logs||'Deployment log is empty.');var node=$('#deployment-log-console').get(0);if(node)node.scrollTop=node.scrollHeight;});
+  }
 
-  $(document).on('click','.js-project-deploy',function(){
-    var $button=$(this).prop('disabled',true);
-    DPM.api('POST','/projects/'+$button.data('id')+'/deploy',{}).done(function(){DPM.toast('Deployment queued','success');loadDashboard(true);}).always(function(){$button.prop('disabled',false);});
-  });
-
-  $(document).on('click','.js-project-log',function(){
-    loadProjectLog($(this).data('project'),String($(this).data('name')||''),true);
-  });
-
-  $('#deployment-log-refresh').on('click',function(){
-    if(activeLogProject)loadProjectLog(activeLogProject,activeLogName,false);
-  });
-  $('#refresh-dashboard').on('click',function(){loadDashboard(false);});
-  $('#global-filter').on('input',applyFilter);
-  $(document).on('dpm:project-added',function(){setTimeout(function(){loadDashboard(true);},350);});
-  loadDashboard(true);
-  refreshTimer=setInterval(function(){loadDashboard(true);},4000);
-  $(window).on('beforeunload',function(){clearInterval(refreshTimer);});
+  $(document).on('click','.tree-toggle',function(){var id=Number($(this).data('project'));collapsed[id]=!collapsed[id];$(this).closest('.project-tree-node').toggleClass('collapsed',collapsed[id]);$(this).text(collapsed[id]?'▸':'▾');});
+  $(document).on('click','.js-project-action',function(){var $button=$(this).prop('disabled',true),action=$button.data('action');DPM.api('POST','/projects/'+$button.data('id')+'/'+action,{}).done(function(){DPM.toast('Project '+action+' accepted','success');setTimeout(function(){loadDashboard(true);},300);}).always(function(){$button.prop('disabled',false);});});
+  $(document).on('click','.js-component-action',function(){var $button=$(this).prop('disabled',true),action=$button.data('action');DPM.api('POST','/components/'+$button.data('id')+'/'+action,{}).done(function(){DPM.toast('Component '+action+' completed','success');loadDashboard(true);}).always(function(){$button.prop('disabled',false);});});
+  $(document).on('click','.js-project-log',function(){loadProjectLog($(this).data('project'),String($(this).data('name')||''),true);});
+  $('#deployment-log-refresh').on('click',function(){if(activeLogProject)loadProjectLog(activeLogProject,activeLogName,false);});
+  $('#refresh-dashboard').on('click',function(){loadDashboard(false);});$('#global-filter').on('input',applyFilter);$(document).on('dpm:project-added',function(){setTimeout(function(){loadDashboard(true);},350);});
+  loadDashboard(true);refreshTimer=setInterval(function(){loadDashboard(true);},4000);$(window).on('beforeunload',function(){clearInterval(refreshTimer);});
 })(window.jQuery, window.DPM);
