@@ -52,19 +52,37 @@ class SupervisorBase:
         services = self.db.fetchall("SELECT * FROM services")
         for service in services:
             pid = service.get("pid")
+            status = str(service.get("status") or "unknown")
             if pid and self._pid_alive(int(pid)):
                 self.db.update(
                     "services",
                     service["id"],
                     {"status": "running", "updated_at": utc_now()},
                 )
-            else:
-                self.db.update(
-                    "services",
-                    service["id"],
-                    {"pid": None, "status": "stopped", "updated_at": utc_now()},
-                )
+                continue
 
+            # Never turn an observed failure into STOPPED on daemon restart. Doing
+            # so would make the startup reconciliation launch the service again and
+            # hide the original crash from the operator.
+            if status in {"failed", "unhealthy"}:
+                next_status = status
+            elif status in {"running", "starting", "restarting"}:
+                next_status = "failed"
+            else:
+                next_status = "stopped"
+
+            values: dict[str, Any] = {
+                "pid": None,
+                "status": next_status,
+                "updated_at": utc_now(),
+            }
+            if next_status == "failed" and status != "failed":
+                values["last_error"] = "Process was not running when DPM started"
+                values["stopped_at"] = utc_now()
+            self.db.update("services", service["id"], values)
+
+        # Only explicitly stopped, enabled services are restored. FAILED and
+        # UNHEALTHY services always wait for a manual action or a new deployment.
         for service in self.db.fetchall(
             "SELECT * FROM services WHERE enabled = 1 AND status = 'stopped'"
         ):
