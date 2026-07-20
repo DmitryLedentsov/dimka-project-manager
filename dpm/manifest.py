@@ -4,7 +4,7 @@ import re
 import shlex
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import yaml
 
@@ -53,7 +53,6 @@ def _process_healthcheck(value: Any, field_name: str) -> dict[str, Any] | None:
         return None
     if not isinstance(value, dict):
         raise ManifestError(f"{field_name} must be an object")
-
     timeout = _duration_seconds(value.get("timeout", value.get("timeout_seconds")), 30)
     interval = _duration_seconds(value.get("interval", value.get("interval_seconds")), 1)
     if value.get("tcp"):
@@ -62,27 +61,11 @@ def _process_healthcheck(value: Any, field_name: str) -> dict[str, Any] | None:
         if not match:
             raise ManifestError(f"{field_name}.tcp must be HOST:PORT")
         host, port = match.groups()
-        return {
-            "type": "command",
-            "command": f"exec 3<>/dev/tcp/{host}/{port}",
-            "timeout_seconds": timeout,
-            "interval_seconds": interval,
-        }
+        return {"type": "command", "command": f"exec 3<>/dev/tcp/{host}/{port}", "timeout_seconds": timeout, "interval_seconds": interval}
     if value.get("http"):
-        return {
-            "type": "http",
-            "url": str(value["http"]),
-            "timeout_seconds": timeout,
-            "interval_seconds": interval,
-        }
+        return {"type": "http", "url": str(value["http"]), "timeout_seconds": timeout, "interval_seconds": interval}
     if value.get("command"):
-        return {
-            "type": "command",
-            "command": value["command"],
-            "timeout_seconds": timeout,
-            "interval_seconds": interval,
-        }
-    # Backward-compatible first-generation healthcheck shape.
+        return {"type": "command", "command": value["command"], "timeout_seconds": timeout, "interval_seconds": interval}
     if value.get("type") in {"http", "command"}:
         result = dict(value)
         result["timeout_seconds"] = timeout
@@ -134,8 +117,20 @@ class ProjectManifest:
 
     @property
     def services(self) -> list[ComponentDefinition]:
-        """Compatibility alias for deployment code from DPM 0.1."""
         return self.components
+
+
+ComponentParser = Callable[[str, dict[str, Any], str], ComponentDefinition]
+_COMPONENT_PARSERS: dict[str, ComponentParser] = {}
+
+
+def register_component_parser(type_name: str, parser: ComponentParser) -> None:
+    normalized = str(type_name).strip().lower()
+    if not normalized:
+        raise ValueError("Component parser type cannot be empty")
+    if normalized in _COMPONENT_PARSERS:
+        raise ValueError(f"Duplicate component parser: {normalized}")
+    _COMPONENT_PARSERS[normalized] = parser
 
 
 def _parse_process(name: str, raw: dict[str, Any], path: str) -> ComponentDefinition:
@@ -146,23 +141,11 @@ def _parse_process(name: str, raw: dict[str, Any], path: str) -> ComponentDefini
         "command": _command(raw.get("command"), f"{path}.command"),
         "cwd": str(raw.get("cwd", raw.get("working_directory", "."))),
         "env": {str(key): str(value) for key, value in environment.items()},
-        "env_file": (
-            str(raw.get("env_file", raw.get("environment_file")))
-            if raw.get("env_file", raw.get("environment_file"))
-            else None
-        ),
+        "env_file": str(raw.get("env_file", raw.get("environment_file"))) if raw.get("env_file", raw.get("environment_file")) else None,
         "healthcheck": raw.get("healthcheck"),
-        "_process_healthcheck": _process_healthcheck(
-            raw.get("healthcheck"), f"{path}.healthcheck"
-        ),
+        "_process_healthcheck": _process_healthcheck(raw.get("healthcheck"), f"{path}.healthcheck"),
     }
-    return ComponentDefinition(
-        name=name,
-        type_name="process",
-        config=config,
-        depends_on=_depends_on(raw.get("depends_on"), f"{path}.depends_on"),
-        enabled=bool(raw.get("enabled", True)),
-    )
+    return ComponentDefinition(name=name, type_name="process", config=config, depends_on=_depends_on(raw.get("depends_on"), f"{path}.depends_on"), enabled=bool(raw.get("enabled", True)))
 
 
 def _parse_static(name: str, raw: dict[str, Any], path: str) -> ComponentDefinition:
@@ -175,31 +158,22 @@ def _parse_static(name: str, raw: dict[str, Any], path: str) -> ComponentDefinit
     healthcheck = raw.get("healthcheck")
     if healthcheck is not None and not isinstance(healthcheck, dict):
         raise ManifestError(f"{path}.healthcheck must be an object")
-    config = {
-        "source": source,
-        "target": target,
-        "url": str(raw.get("url")) if raw.get("url") else None,
-        "index": str(raw.get("index", "index.html")),
-        "healthcheck": healthcheck or {},
-    }
-    return ComponentDefinition(
-        name=name,
-        type_name="static",
-        config=config,
-        depends_on=_depends_on(raw.get("depends_on"), f"{path}.depends_on"),
-        enabled=bool(raw.get("enabled", True)),
-    )
+    config = {"source": source, "target": target, "url": str(raw.get("url")) if raw.get("url") else None, "index": str(raw.get("index", "index.html")), "healthcheck": healthcheck or {}}
+    return ComponentDefinition(name=name, type_name="static", config=config, depends_on=_depends_on(raw.get("depends_on"), f"{path}.depends_on"), enabled=bool(raw.get("enabled", True)))
+
+
+register_component_parser("process", _parse_process)
+register_component_parser("static", _parse_static)
 
 
 def _parse_component(name: str, raw: Any, path: str) -> ComponentDefinition:
     if not isinstance(raw, dict):
         raise ManifestError(f"{path} must be an object")
     type_name = str(raw.get("type", "process")).strip().lower()
-    if type_name == "process":
-        return _parse_process(name, raw, path)
-    if type_name == "static":
-        return _parse_static(name, raw, path)
-    raise ManifestError(f"Unsupported component type for {name}: {type_name}")
+    parser = _COMPONENT_PARSERS.get(type_name)
+    if not parser:
+        raise ManifestError(f"Unsupported component type for {name}: {type_name}")
+    return parser(name, raw, path)
 
 
 def _legacy_components(data: dict[str, Any]) -> dict[str, Any] | None:
@@ -231,25 +205,19 @@ def load_manifest(repository: Path) -> ProjectManifest:
         data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     except yaml.YAMLError as exc:
         raise ManifestError(f"Invalid dpm.yaml: {exc}") from exc
-
     if data.get("version") != 1:
         raise ManifestError("dpm.yaml must contain 'version: 1'")
-
     project_data = data.get("project") or {}
     build_data = data.get("build") or []
     if isinstance(build_data, dict):
         build_data = build_data.get("commands") or []
-    if not isinstance(build_data, list) or not all(
-        isinstance(command, str) and command.strip() for command in build_data
-    ):
+    if not isinstance(build_data, list) or not all(isinstance(command, str) and command.strip() for command in build_data):
         raise ManifestError("build must be a list of shell commands")
-
     raw_components = data.get("components")
     if raw_components is None:
         raw_components = _legacy_components(data)
     if not isinstance(raw_components, dict) or not raw_components:
         raise ManifestError("dpm.yaml must define a non-empty components map")
-
     components: list[ComponentDefinition] = []
     names: set[str] = set()
     for raw_name, raw in raw_components.items():
@@ -262,18 +230,9 @@ def load_manifest(repository: Path) -> ProjectManifest:
             raise ManifestError(f"Duplicate component name: {name}")
         names.add(name)
         components.append(_parse_component(name, raw, f"components.{name}"))
-
-    unknown_dependencies = {
-        dependency
-        for component in components
-        for dependency in component.depends_on
-        if dependency not in names
-    }
+    unknown_dependencies = {dependency for component in components for dependency in component.depends_on if dependency not in names}
     if unknown_dependencies:
-        raise ManifestError(
-            "Unknown component dependencies: " + ", ".join(sorted(unknown_dependencies))
-        )
-
+        raise ManifestError("Unknown component dependencies: " + ", ".join(sorted(unknown_dependencies)))
     graph = {component.name: set(component.depends_on) for component in components}
     remaining = set(graph)
     resolved: set[str] = set()
@@ -283,12 +242,7 @@ def load_manifest(repository: Path) -> ProjectManifest:
             raise ManifestError("Component dependency graph contains a cycle")
         resolved.update(ready)
         remaining -= ready
-
-    return ProjectManifest(
-        name=str(project_data.get("name")).strip() if project_data.get("name") else None,
-        build_commands=[str(command).strip() for command in build_data],
-        components=components,
-    )
+    return ProjectManifest(name=str(project_data.get("name")).strip() if project_data.get("name") else None, build_commands=[str(command).strip() for command in build_data], components=components)
 
 
 def display_command(command: list[str] | str) -> str:
