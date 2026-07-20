@@ -38,11 +38,25 @@ def _duration_seconds(value: Any, default: int = 30) -> int:
         return default
 
 
+def _format_bytes(value: int | float | None) -> str:
+    size = float(value or 0)
+    units = ("B", "KB", "MB", "GB", "TB")
+    index = 0
+    while size >= 1024 and index < len(units) - 1:
+        size /= 1024
+        index += 1
+    if index == 0:
+        return f"{int(size)} {units[index]}"
+    return f"{size:.1f} {units[index]}"
+
+
 class ComponentHandler(ABC):
     type_name: str
+    type_label: str
     template_name: str
     action_labels: dict[str, str]
     healthy_states: set[str]
+    active_states: set[str]
     stopped_states: set[str]
 
     def __init__(self, settings: Settings, db: Database) -> None:
@@ -66,21 +80,57 @@ class ComponentHandler(ABC):
         return self.start(component_id)
 
     def logs(self, component: dict[str, Any], lines: int) -> dict[str, Any]:
-        return {
-            "logs": tail_file(Path(component["log_path"]), lines),
-            "path": component["log_path"],
-        }
+        return {"logs": tail_file(Path(component["log_path"]), lines), "path": component["log_path"]}
 
     def delete(self, component_id: int) -> None:
         self.stop(component_id)
         self.db.execute("DELETE FROM services WHERE id = ?", [component_id])
 
+    def prepare_deploy_stop(self, component_id: int) -> None:
+        self.stop(component_id)
+
+    def prepare_reconfigure(
+        self,
+        component: dict[str, Any],
+        new_type: str,
+        new_config: dict[str, Any],
+    ) -> None:
+        if new_type != self.type_name:
+            self.stop(int(component["id"]))
+
+    def summary(self, component: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "target_title": component.get("working_directory") or ".",
+            "target_subtitle": component.get("deployed_commit") or "not deployed",
+            "runtime_title": "—",
+            "runtime_subtitle": "inactive",
+            "open_url": None,
+        }
+
+    def ui(self, component: dict[str, Any]) -> dict[str, Any]:
+        status = str(component.get("status") or "unknown")
+        active = status in self.active_states
+        project_stopped = str(component.get("project_desired_state") or "running") == "stopped"
+        return {
+            "type_label": self.type_label,
+            "actions": dict(self.action_labels),
+            "active": active,
+            "healthy": status in self.healthy_states,
+            "can_start": not active and not project_stopped,
+            "can_stop": active,
+            "can_restart": active and not project_stopped,
+            "project_stopped": project_stopped,
+            **self.summary(component),
+        }
+
 
 class ProcessComponentHandler(ComponentHandler):
     type_name = "process"
+    type_label = "PROC"
     template_name = "component_process.html"
     action_labels = {"start": "Start", "stop": "Stop", "restart": "Restart"}
     healthy_states = {"running"}
+    active_states = {"running", "starting", "unhealthy"}
     stopped_states = {"stopped"}
 
     def __init__(self, settings: Settings, db: Database, supervisor: ServiceSupervisor) -> None:
@@ -92,11 +142,7 @@ class ProcessComponentHandler(ComponentHandler):
 
     def start(self, component_id: int) -> dict[str, Any]:
         try:
-            self.db.update(
-                "services",
-                component_id,
-                {"enabled": 1, "updated_at": utc_now()},
-            )
+            self.db.update("services", component_id, {"enabled": 1, "updated_at": utc_now()})
             return self.supervisor.start_service(component_id)
         except ServiceError as exc:
             raise ComponentError(str(exc)) from exc
@@ -119,12 +165,30 @@ class ProcessComponentHandler(ComponentHandler):
         except ServiceError as exc:
             raise ComponentError(str(exc)) from exc
 
+    def summary(self, component: dict[str, Any]) -> dict[str, Any]:
+        pid = component.get("pid")
+        if pid:
+            runtime_title = f"PID {pid}"
+            runtime_subtitle = f"{component.get('memory_mb', 0)} MB"
+        else:
+            runtime_title = "—"
+            runtime_subtitle = "inactive"
+        return {
+            "target_title": component.get("working_directory") or ".",
+            "target_subtitle": str(component.get("deployed_commit") or "not deployed")[:8],
+            "runtime_title": runtime_title,
+            "runtime_subtitle": runtime_subtitle,
+            "open_url": None,
+        }
+
 
 class StaticComponentHandler(ComponentHandler):
     type_name = "static"
+    type_label = "WEB"
     template_name = "component_static.html"
     action_labels = {"start": "Publish", "stop": "Unpublish", "restart": "Republish"}
     healthy_states = {"ready"}
+    active_states = {"ready", "publishing"}
     stopped_states = {"unpublished", "stopped"}
 
     def _component(self, component_id: int) -> dict[str, Any]:
@@ -155,22 +219,26 @@ class StaticComponentHandler(ComponentHandler):
         item = dict(component)
         config = self._config(item)
         runtime = self._runtime(item)
-        item["component_type"] = "static"
-        item["config"] = config
-        item["runtime"] = runtime
-        item["source"] = config.get("source")
-        item["target"] = config.get("target")
-        item["url"] = config.get("url")
-        item["published_commit"] = runtime.get("published_commit")
-        item["published_at"] = runtime.get("published_at")
-        item["file_count"] = runtime.get("file_count", 0)
-        item["size_bytes"] = runtime.get("size_bytes", 0)
-        item["alive"] = item.get("status") == "ready"
-        item["pid"] = None
-        item["cpu_percent"] = 0.0
-        item["memory_mb"] = 0.0
-        item["uptime_seconds"] = None
-        item["depends_on"] = Database.decode_json(item.get("depends_on_json"), [])
+        item.update(
+            {
+                "component_type": "static",
+                "config": config,
+                "runtime": runtime,
+                "source": config.get("source"),
+                "target": config.get("target"),
+                "url": config.get("url"),
+                "published_commit": runtime.get("published_commit"),
+                "published_at": runtime.get("published_at"),
+                "file_count": runtime.get("file_count", 0),
+                "size_bytes": runtime.get("size_bytes", 0),
+                "alive": item.get("status") == "ready",
+                "pid": None,
+                "cpu_percent": 0.0,
+                "memory_mb": 0.0,
+                "uptime_seconds": None,
+                "depends_on": Database.decode_json(item.get("depends_on_json"), []),
+            }
+        )
         return item
 
     @staticmethod
@@ -183,12 +251,13 @@ class StaticComponentHandler(ComponentHandler):
     def _marker(component: dict[str, Any]) -> str:
         return f"{component['project_id']}:{component['id']}"
 
+    def _owner_path(self, target: Path, component: dict[str, Any]) -> Path:
+        return target.parent / f".{target.name}.dpm-owner-{component['id']}"
+
     def _owned_target(self, target: Path, component: dict[str, Any]) -> bool:
-        marker_path = target / ".dpm-component"
-        if not marker_path.exists():
-            return False
+        marker_path = self._owner_path(target, component)
         try:
-            return marker_path.read_text(encoding="utf-8").strip() == self._marker(component)
+            return marker_path.is_file() and marker_path.read_text(encoding="utf-8").strip() == self._marker(component)
         except OSError:
             return False
 
@@ -235,25 +304,22 @@ class StaticComponentHandler(ComponentHandler):
             raise ComponentError(f"Static index file does not exist: {source / index_file}")
 
         log_path = Path(component["log_path"])
-        self.db.update(
-            "services",
-            component_id,
-            {"status": "publishing", "last_error": None, "updated_at": utc_now()},
-        )
+        self.db.update("services", component_id, {"status": "publishing", "last_error": None, "updated_at": utc_now()})
         self._write_log(log_path, f"publishing {source} -> {target}")
-
         staging = target.parent / f".{target.name}.dpm-new-{component_id}"
         backup = target.parent / f".{target.name}.dpm-old-{component_id}"
+        owner_path = self._owner_path(target, component)
         had_previous = target.exists()
+        activated = False
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.rmtree(staging, ignore_errors=True)
             shutil.rmtree(backup, ignore_errors=True)
             shutil.copytree(source, staging)
-            (staging / ".dpm-component").write_text(self._marker(component), encoding="utf-8")
             if had_previous:
                 target.rename(backup)
             staging.rename(target)
+            activated = True
 
             file_count = 0
             size_bytes = 0
@@ -261,50 +327,29 @@ class StaticComponentHandler(ComponentHandler):
                 if path.is_file():
                     file_count += 1
                     size_bytes += path.stat().st_size
-
             healthy, error, latency_ms = self._check_http(config)
             if not healthy:
                 raise ComponentError(error or "Static healthcheck failed")
 
+            owner_path.write_text(self._marker(component), encoding="utf-8")
             shutil.rmtree(backup, ignore_errors=True)
-            release_commit = (
-                component.get("attempted_commit")
-                or component.get("remote_commit")
-                or component.get("deployed_commit")
-            )
-            runtime = {
-                "published_commit": release_commit,
-                "published_at": utc_now(),
-                "file_count": file_count,
-                "size_bytes": size_bytes,
-                "latency_ms": latency_ms,
-            }
-            self.db.update(
-                "services",
-                component_id,
-                {
-                    "status": "ready",
-                    "runtime_json": json.dumps(runtime),
-                    "started_at": utc_now(),
-                    "stopped_at": None,
-                    "last_error": None,
-                    "updated_at": utc_now(),
-                },
-            )
+            release_commit = component.get("attempted_commit") or component.get("remote_commit") or component.get("deployed_commit")
+            runtime = {"published_commit": release_commit, "published_at": utc_now(), "file_count": file_count, "size_bytes": size_bytes, "latency_ms": latency_ms}
+            self.db.update("services", component_id, {"status": "ready", "runtime_json": json.dumps(runtime), "started_at": utc_now(), "stopped_at": None, "last_error": None, "updated_at": utc_now()})
             self._write_log(log_path, f"published {file_count} files ({size_bytes} bytes)")
             return self.enrich(self._component(component_id))
         except (OSError, ComponentError) as exc:
             shutil.rmtree(staging, ignore_errors=True)
-            if target.exists() and self._owned_target(target, component):
+            if activated and target.exists():
                 shutil.rmtree(target, ignore_errors=True)
+            restored = False
             if backup.exists():
                 backup.rename(target)
+                restored = True
                 self._write_log(log_path, "restored previous static release")
-            self.db.update(
-                "services",
-                component_id,
-                {"status": "failed", "last_error": str(exc), "updated_at": utc_now()},
-            )
+            elif not had_previous:
+                owner_path.unlink(missing_ok=True)
+            self.db.update("services", component_id, {"status": "ready" if restored else "failed", "last_error": str(exc), "updated_at": utc_now()})
             self._write_log(log_path, f"publication failed: {exc}")
             if isinstance(exc, ComponentError):
                 raise
@@ -317,40 +362,45 @@ class StaticComponentHandler(ComponentHandler):
         if not target_value:
             raise ComponentError("Static component target is empty")
         target = Path(target_value).resolve()
+        owner_path = self._owner_path(target, component)
         log_path = Path(component["log_path"])
         try:
             if target.exists():
                 if not self._owned_target(target, component):
                     raise ComponentError(f"Refusing to remove unowned static target: {target}")
                 shutil.rmtree(target)
-            self.db.update(
-                "services",
-                component_id,
-                {
-                    "status": "unpublished",
-                    "stopped_at": utc_now(),
-                    "last_error": None,
-                    "updated_at": utc_now(),
-                },
-            )
+            owner_path.unlink(missing_ok=True)
+            self.db.update("services", component_id, {"status": "unpublished", "stopped_at": utc_now(), "last_error": None, "updated_at": utc_now()})
             self._write_log(log_path, f"unpublished {target}")
             return self.enrich(self._component(component_id))
         except OSError as exc:
-            self.db.update(
-                "services",
-                component_id,
-                {"status": "failed", "last_error": str(exc), "updated_at": utc_now()},
-            )
+            self.db.update("services", component_id, {"status": "failed", "last_error": str(exc), "updated_at": utc_now()})
             raise ComponentError(str(exc)) from exc
+
+    def prepare_deploy_stop(self, component_id: int) -> None:
+        # Keep the currently published release online until the new artifact has
+        # passed its own HTTP check and is atomically activated.
+        component = self._component(component_id)
+        self._write_log(Path(component["log_path"]), "keeping current release during project deploy")
+
+    def prepare_reconfigure(self, component: dict[str, Any], new_type: str, new_config: dict[str, Any]) -> None:
+        old_target = str(self._config(component).get("target") or "")
+        new_target = str(new_config.get("target") or "")
+        if new_type != self.type_name or old_target != new_target:
+            self.stop(int(component["id"]))
+
+    def summary(self, component: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "target_title": component.get("target") or "—",
+            "target_subtitle": component.get("url") or component.get("source") or "static publication",
+            "runtime_title": _format_bytes(component.get("size_bytes")),
+            "runtime_subtitle": f"{component.get('file_count', 0)} files",
+            "open_url": component.get("url"),
+        }
 
 
 class ComponentManager:
-    def __init__(
-        self,
-        settings: Settings,
-        db: Database,
-        process_supervisor: ServiceSupervisor,
-    ) -> None:
+    def __init__(self, settings: Settings, db: Database, process_supervisor: ServiceSupervisor) -> None:
         self.settings = settings
         self.db = db
         self.process_supervisor = process_supervisor
@@ -394,12 +444,15 @@ class ComponentManager:
         return component
 
     def _enrich(self, component: dict[str, Any]) -> dict[str, Any]:
-        item = self.handler_for(component).enrich(component)
+        handler = self.handler_for(component)
+        item = handler.enrich(component)
         item["component_type"] = str(component.get("component_type") or "process")
         item["config"] = Database.decode_json(component.get("config_json"), {})
         item["runtime"] = Database.decode_json(component.get("runtime_json"), {})
         item["depends_on"] = Database.decode_json(component.get("depends_on_json"), [])
-        item["actions"] = self.handler_for(component).action_labels
+        item["ui"] = handler.ui(item)
+        item["actions"] = item["ui"]["actions"]
+        item["healthy"] = item["ui"]["healthy"]
         return item
 
     def get_component(self, component_id: int) -> dict[str, Any]:
@@ -443,6 +496,10 @@ class ComponentManager:
         component = self.get_component_raw(component_id)
         self.handler_for(component).delete(component_id)
 
+    def prepare_reconfigure(self, component_id: int, new_type: str, new_config: dict[str, Any]) -> None:
+        component = self.get_component_raw(component_id)
+        self.handler_for(component).prepare_reconfigure(component, new_type, new_config)
+
     def component_logs(self, component_id: int, lines: int = 250) -> dict[str, Any]:
         component = self.get_component_raw(component_id)
         return self.handler_for(component).logs(component, lines)
@@ -451,25 +508,11 @@ class ComponentManager:
         component = self.get_component_raw(component_id)
         return self.handler_for(component).template_name
 
-    def _ordered_project_components(
-        self,
-        project_id: int,
-        *,
-        enabled_only: bool,
-    ) -> list[dict[str, Any]]:
+    def _ordered_project_components(self, project_id: int, *, enabled_only: bool) -> list[dict[str, Any]]:
         clause = " AND enabled = 1" if enabled_only else ""
-        components = self.db.fetchall(
-            f"SELECT * FROM services WHERE project_id = ?{clause}", [project_id]
-        )
+        components = self.db.fetchall(f"SELECT * FROM services WHERE project_id = ?{clause}", [project_id])
         by_name = {component["name"]: component for component in components}
-        dependencies = {
-            name: {
-                dependency
-                for dependency in Database.decode_json(component.get("depends_on_json"), [])
-                if dependency in by_name
-            }
-            for name, component in by_name.items()
-        }
+        dependencies = {name: {dependency for dependency in Database.decode_json(component.get("depends_on_json"), []) if dependency in by_name} for name, component in by_name.items()}
         ordered: list[dict[str, Any]] = []
         resolved: set[str] = set()
         remaining = set(by_name)
@@ -485,30 +528,23 @@ class ComponentManager:
 
     def start_project(self, project_id: int) -> None:
         for component in self._ordered_project_components(project_id, enabled_only=True):
-            # ProjectManager sets desired_state=running before entering here.
             self.start_component(int(component["id"]))
 
     def stop_project(self, project_id: int) -> None:
-        components = list(reversed(self._ordered_project_components(project_id, enabled_only=False)))
-        for component in components:
+        for component in reversed(self._ordered_project_components(project_id, enabled_only=False)):
             try:
                 self.stop_component(int(component["id"]))
             except ComponentError:
                 continue
 
+    def stop_project_for_deploy(self, project_id: int) -> None:
+        for component in reversed(self._ordered_project_components(project_id, enabled_only=False)):
+            self.handler_for(component).prepare_deploy_stop(int(component["id"]))
+
     def project_summary(self, project_id: int) -> dict[str, int]:
         components = self.list_components(project_id)
-        ready = 0
-        failed = 0
-        for component in components:
-            handler = self.handler_for(component)
-            if component.get("status") in handler.healthy_states:
-                ready += 1
-            if component.get("status") in {"failed", "unhealthy"}:
-                failed += 1
-        return {"total": len(components), "ready": ready, "failed": failed}
+        return {"total": len(components), "ready": sum(1 for item in components if item.get("healthy")), "failed": sum(1 for item in components if item.get("status") in {"failed", "unhealthy"})}
 
-    # Compatibility aliases for the first DPM API/CLI generation.
     def list_services(self) -> list[dict[str, Any]]:
         return self.list_components()
 
