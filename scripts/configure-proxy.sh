@@ -21,7 +21,7 @@ http:
     dpm-control-plane:
       loadBalancer:
         servers:
-          - url: "http://host.docker.internal:${PORT}"
+          - url: "http://127.0.0.1:${PORT}"
 EOF
 chmod 600 /etc/dpm/traefik-dynamic.yml
 chown root:root /etc/dpm/traefik-dynamic.yml
