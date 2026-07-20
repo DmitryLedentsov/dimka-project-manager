@@ -1,36 +1,38 @@
 # Dimka Project Manager
 
-Dimka Project Manager (DPM) — лёгкая панель для одного Linux-сервера. Она клонирует Git-репозитории, раз в минуту проверяет новые коммиты, собирает проекты и управляет их процессами. Один репозиторий может объявить несколько сервисов.
+Dimka Project Manager (DPM) — лёгкая панель управления приложениями на одном Linux-сервере.
 
-В DPM два интерфейса над одним демоном:
+DPM использует двухуровневую модель:
 
-- адаптивная веб-панель по адресу `/admin`;
-- CLI `dpm` для терминала.
+```text
+Project
+├── process component
+├── static component
+└── future component types
+```
 
-Frontend написан на HTML, CSS и jQuery. Backend — Python, Flask, SQLite и обычные Linux-процессы без Docker, Kubernetes и тяжёлых UI-фреймворков.
+**Project** — логическая единица деплоя и управления Git-репозиторием. Его можно деплоить, редеплоить, запускать и останавливать целиком.
 
-DPM, Git-операции, build-команды и все управляемые сервисы запускаются от `root`. Отдельный системный пользователь не создаётся.
+**Component** — конкретная часть проекта на сервере. У каждого типа свой lifecycle, страница, действия, настройки и логи. Добавление нового component handler не требует менять логику проекта.
 
-## Возможности v0.1
+Сейчас поддерживаются:
 
-- вход в панель, первоначально `admin / admin`;
-- добавление проекта по Git URL;
-- публичные и приватные репозитории через SSH;
-- несколько сервисов в одном `dpm.yaml`;
-- автоматическая проверка Git с настраиваемым интервалом;
-- build-команды перед перезапуском;
-- start, stop, restart и delete для процессов;
-- restart policy: `always`, `on-failure`, `never`;
-- HTTP- и command-healthchecks;
-- stdout/stderr в файлы и live-логи в панели;
-- статусы, PID, uptime, CPU и память;
-- история последнего деплоя и видимые ошибки;
-- никакого скрытого rollback: упавший build или process остаётся явно виден;
-- CLI использует тот же HTTP API, что и веб-клиент.
+- `process` — долгоживущий Linux-процесс;
+- `static` — публикация собранных файлов в целевую директорию.
+
+В будущем registry рассчитан на `cron`, `job`, `container`, `systemd`, `external` и другие типы.
+
+DPM, Git, build-команды и компоненты работают от `root`. Отдельный системный пользователь не создаётся.
+
+## Интерфейсы
+
+- адаптивная web-панель: `/admin`;
+- CLI `dpm`;
+- единый Python daemon и единый HTTP API;
+- SQLite для состояния;
+- HTML, CSS и jQuery без тяжёлого frontend-фреймворка.
 
 ## Установка
-
-Поддерживается Linux с systemd. На Debian/Ubuntu недостающие Python, Git и OpenSSH установятся автоматически.
 
 ```bash
 git clone https://github.com/DmitryLedentsov/dimka-project-manager.git
@@ -38,76 +40,189 @@ cd dimka-project-manager
 sudo ./install.sh
 ```
 
-Установщик запросит:
+Обновление:
 
-- админский логин;
-- пароль, по умолчанию `admin`;
-- публичный URL панели;
-- listen host и port;
-- базовый путь, по умолчанию `/admin`;
-- интервал проверки Git, по умолчанию 60 секунд.
-
-По умолчанию панель слушает порт `8787`:
-
-```text
-http://SERVER_IP:8787/admin
+```bash
+git pull origin master
+sudo ./update.sh
 ```
 
-Можно указать порт `80`, тогда итоговый адрес будет вида:
+Конфигурация:
 
-```text
-http://89.169.1.117/admin
+```bash
+sudo ./config.sh
 ```
 
-После установки скрипт напечатает публичный SSH-ключ DPM. Менеджер работает от `root`, но использует отдельный SSH-каталог `/var/lib/dpm/.ssh`, чтобы не менять интерактивную конфигурацию `/root/.ssh`.
+Данные:
 
-Добавьте ключ в GitHub для доступа к приватным репозиториям:
+```text
+/var/lib/dpm
+/var/log/dpm
+/etc/dpm/config.env
+```
+
+SSH-ключ для приватных Git-репозиториев:
 
 ```bash
 sudo cat /var/lib/dpm/.ssh/id_ed25519.pub
 ```
 
-## Конфигурация проекта
+## `dpm.yaml`
 
-В корне управляемого репозитория должен лежать `dpm.yaml`:
+В корне проекта должен находиться простой manifest:
 
 ```yaml
 version: 1
 
 project:
-  name: multiplayer-game
+  name: example-app
 
 build:
-  commands:
-    - ./mvnw clean package -DskipTests
-    - npm --prefix frontend ci
-    - npm --prefix frontend run build
+  - ./mvnw clean package -DskipTests
+  - npm --prefix frontend ci
+  - npm --prefix frontend run build
 
-services:
-  - name: main-service
+components:
+  api:
+    type: process
     command:
       - java
       - -jar
-      - main-service/target/main-service.jar
-    working_directory: .
-    environment_file: .env
-    restart: always
+      - backend/target/app.jar
+    cwd: .
+    env_file: /etc/example-app/runtime.env
+    env:
+      SERVER_PORT: "8080"
     healthcheck:
-      type: http
-      url: http://127.0.0.1:8080/actuator/health
-      timeout_seconds: 45
+      tcp: 127.0.0.1:8080
+      timeout: 45s
 
-  - name: frontend
-    command: "npm run preview -- --host 0.0.0.0 --port 3000"
-    working_directory: frontend
-    restart: on-failure
-    depends_on:
-      - main-service
+  web:
+    type: static
+    depends_on: [api]
+    source: frontend/dist
+    target: /var/www/example-app
+    url: https://example.com
+    healthcheck:
+      http: https://example.com
+      timeout: 15s
 ```
 
-`command` допускает массив аргументов либо shell-строку. Build-команды исполняются через Bash из корня репозитория.
+`components` — map, где ключ одновременно является читаемым именем и стабильным ID внутри проекта.
 
-Если build завершается ошибкой, работающие процессы не перезапускаются, а деплой получает статус `failed`. Если build прошёл, но новый сервис упал, он остаётся в состоянии `failed` с сохранёнными логами. Автоматического rollback в первой версии нет.
+Общие поля:
+
+```yaml
+components:
+  component-name:
+    type: process
+    enabled: true
+    depends_on: []
+```
+
+### Process
+
+```yaml
+worker:
+  type: process
+  command: python worker.py
+  cwd: backend
+  env_file: /etc/app/runtime.env
+  env:
+    WORKERS: "4"
+  healthcheck:
+    command: python healthcheck.py
+    timeout: 30s
+```
+
+Healthcheck поддерживает одну из форм:
+
+```yaml
+healthcheck:
+  tcp: 127.0.0.1:8080
+  timeout: 30s
+```
+
+```yaml
+healthcheck:
+  http: http://127.0.0.1:8080/health
+  timeout: 30s
+```
+
+```yaml
+healthcheck:
+  command: ./healthcheck.sh
+  timeout: 30s
+```
+
+Process actions:
+
+```text
+Start
+Stop
+Restart
+Logs
+```
+
+После аварийного выхода process остаётся `FAILED`. Автоматического рестарта нет.
+
+### Static
+
+```yaml
+web:
+  type: static
+  source: frontend/dist
+  target: /var/www/app
+  url: https://example.com
+  index: index.html
+  healthcheck:
+    http: https://example.com
+    timeout: 15s
+```
+
+Static actions:
+
+```text
+Publish
+Unpublish
+Republish
+Open
+Publication logs
+```
+
+DPM копирует release во временную директорию, атомарно переключает target и восстанавливает предыдущую версию, если HTTP-check новой публикации не прошёл.
+
+## Project lifecycle
+
+```text
+fetch repository
+→ read dpm.yaml
+→ register missing components
+→ build
+→ stop old components in reverse dependency order
+→ apply component definitions
+→ start components in dependency order
+→ healthchecks
+```
+
+Если build падает, старые работающие компоненты не трогаются.
+
+У проекта есть:
+
+```text
+desired_state = running | stopped
+actual_state  = running | stopped | deploying | degraded | failed
+```
+
+`Stop project` останавливает все дочерние компоненты. Пока project остановлен, отдельный component нельзя запустить — сначала нужно запустить project.
+
+Deploy остановленного project обновляет checkout и артефакты, но оставляет компоненты остановленными.
+
+Логи разделены:
+
+- project deployment log: Git, build, apply, component ordering;
+- process component log: stdout/stderr;
+- static component log: publication и HTTP-check.
 
 ## CLI
 
@@ -115,57 +230,29 @@ services:
 dpm status
 
 dpm project list
-dpm project add git@github.com:DmitryLedentsov/my-project.git --branch master
+dpm project add git@github.com:user/project.git --branch master
 dpm project check 1
 dpm project deploy 1
+dpm project redeploy 1
+dpm project start 1
+dpm project stop 1
 dpm project remove 1
 
-dpm service list
-dpm service start 1
-dpm service stop 1
-dpm service restart 1
-dpm service delete 1
+dpm component list
+dpm component start 1
+dpm component stop 1
+dpm component restart 1
+dpm component delete 1
 
 dpm logs 1 --lines 300
 dpm logs 1 --follow
 ```
 
-CLI обращается к локальному API DPM и использует токен из `/etc/dpm/config.env`. Он не открывает SQLite и не управляет процессами параллельно с демоном.
+`dpm service ...` сохранён как compatibility alias для `dpm component ...`.
 
-## Управление самим DPM
+## Совместимость
 
-```bash
-sudo ./config.sh       # изменить логин, пароль, URL и polling
-sudo ./update.sh       # обновить установленный manager из текущего checkout
-sudo ./uninstall.sh    # удалить программу, сохранить данные
-sudo ./uninstall.sh --purge
-```
-
-Полезные системные команды:
-
-```bash
-systemctl status dimka-project-manager
-journalctl -u dimka-project-manager -f
-```
-
-Данные находятся в `/var/lib/dpm`, логи сервисов — в `/var/log/dpm`, конфигурация — в `/etc/dpm/config.env`.
-
-## Модель обновления
-
-DPM сравнивает SHA удалённой ветки с последней попыткой деплоя:
-
-```text
-git ls-remote
-→ новый SHA
-→ fetch + checkout
-→ dpm.yaml
-→ build
-→ stop old processes
-→ start new processes
-→ optional healthchecks
-```
-
-Неуспешный commit не пересобирается каждую минуту бесконечно. Его можно повторить кнопкой **Deploy now** или новым коммитом.
+Manifest первого поколения с `services:` продолжает читаться как набор `process`-компонентов. После следующего успешного деплоя записи автоматически получают новый component schema.
 
 ## Разработка
 
