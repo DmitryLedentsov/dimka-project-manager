@@ -121,12 +121,14 @@ class ProjectManagerBase:
 
         if item["deploying"] or item.get("deploy_status") == "deploying":
             actual_state = "deploying"
+        elif item["desired_state"] == "stopped" and summary["ready"] == 0:
+            # Runtime state follows an explicit operator Stop. Deployment failures
+            # remain available separately through deploy_status/last_error.
+            actual_state = "stopped"
         elif item.get("deploy_status") in {"failed", "check_failed"}:
             actual_state = "failed"
         elif summary["failed"]:
             actual_state = "degraded"
-        elif item["desired_state"] == "stopped" and summary["ready"] == 0:
-            actual_state = "stopped"
         elif summary["total"] and summary["ready"] == summary["total"]:
             actual_state = "running"
         elif summary["total"] == 0:
