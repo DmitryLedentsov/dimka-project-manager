@@ -19,7 +19,7 @@ class ServiceDefinition:
     working_directory: str = "."
     environment: dict[str, str] = field(default_factory=dict)
     environment_file: str | None = None
-    restart_policy: str = "always"
+    restart_policy: str = "never"
     healthcheck: dict[str, Any] | None = None
     depends_on: list[str] = field(default_factory=list)
     enabled: bool = True
@@ -79,9 +79,12 @@ def load_manifest(repository: Path) -> ProjectManifest:
             raise ManifestError(f"Duplicate service name: {name}")
         names.add(name)
 
-        restart = raw.get("restart", "always")
+        # Older manifests may still contain always/on-failure. Keep accepting the
+        # field so existing repositories deploy, but DPM intentionally stores and
+        # enforces 'never': a crashed process must remain visible as FAILED.
+        restart = raw.get("restart", "never")
         if isinstance(restart, dict):
-            restart = restart.get("policy", "always")
+            restart = restart.get("policy", "never")
         restart = str(restart).lower()
         if restart not in {"always", "on-failure", "never"}:
             raise ManifestError(f"Invalid restart policy for {name}: {restart}")
@@ -101,7 +104,7 @@ def load_manifest(repository: Path) -> ProjectManifest:
                 working_directory=str(raw.get("working_directory", ".")),
                 environment={str(k): str(v) for k, v in environment.items()},
                 environment_file=(str(raw["environment_file"]) if raw.get("environment_file") else None),
-                restart_policy=restart,
+                restart_policy="never",
                 healthcheck=raw.get("healthcheck"),
                 depends_on=depends_on,
                 enabled=bool(raw.get("enabled", True)),
