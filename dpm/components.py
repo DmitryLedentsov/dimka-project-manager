@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import time
 import urllib.error
@@ -132,15 +131,16 @@ class StaticComponentHandler(ComponentHandler):
         component = self.db.fetchone(
             """
             SELECT s.*, p.name AS project_name, p.repo_path, p.deployed_commit,
-                   p.attempted_commit, p.remote_commit
+                   p.attempted_commit, p.remote_commit,
+                   p.desired_state AS project_desired_state
               FROM services s
               JOIN projects p ON p.id = s.project_id
-             WHERE s.id = ?
+             WHERE s.id = ? AND s.component_type = 'static'
             """,
             [component_id],
         )
         if not component:
-            raise ComponentError("Component not found")
+            raise ComponentError("Static component not found")
         return component
 
     @staticmethod
@@ -155,6 +155,7 @@ class StaticComponentHandler(ComponentHandler):
         item = dict(component)
         config = self._config(item)
         runtime = self._runtime(item)
+        item["component_type"] = "static"
         item["config"] = config
         item["runtime"] = runtime
         item["source"] = config.get("source")
@@ -181,6 +182,15 @@ class StaticComponentHandler(ComponentHandler):
     @staticmethod
     def _marker(component: dict[str, Any]) -> str:
         return f"{component['project_id']}:{component['id']}"
+
+    def _owned_target(self, target: Path, component: dict[str, Any]) -> bool:
+        marker_path = target / ".dpm-component"
+        if not marker_path.exists():
+            return False
+        try:
+            return marker_path.read_text(encoding="utf-8").strip() == self._marker(component)
+        except OSError:
+            return False
 
     def _check_http(self, config: dict[str, Any]) -> tuple[bool, str | None, int | None]:
         healthcheck = config.get("healthcheck") or {}
@@ -225,26 +235,25 @@ class StaticComponentHandler(ComponentHandler):
             raise ComponentError(f"Static index file does not exist: {source / index_file}")
 
         log_path = Path(component["log_path"])
-        now = utc_now()
         self.db.update(
             "services",
             component_id,
-            {"status": "publishing", "last_error": None, "updated_at": now},
+            {"status": "publishing", "last_error": None, "updated_at": utc_now()},
         )
         self._write_log(log_path, f"publishing {source} -> {target}")
 
         staging = target.parent / f".{target.name}.dpm-new-{component_id}"
         backup = target.parent / f".{target.name}.dpm-old-{component_id}"
+        had_previous = target.exists()
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.rmtree(staging, ignore_errors=True)
             shutil.rmtree(backup, ignore_errors=True)
             shutil.copytree(source, staging)
             (staging / ".dpm-component").write_text(self._marker(component), encoding="utf-8")
-            if target.exists():
+            if had_previous:
                 target.rename(backup)
             staging.rename(target)
-            shutil.rmtree(backup, ignore_errors=True)
 
             file_count = 0
             size_bytes = 0
@@ -256,6 +265,8 @@ class StaticComponentHandler(ComponentHandler):
             healthy, error, latency_ms = self._check_http(config)
             if not healthy:
                 raise ComponentError(error or "Static healthcheck failed")
+
+            shutil.rmtree(backup, ignore_errors=True)
             release_commit = (
                 component.get("attempted_commit")
                 or component.get("remote_commit")
@@ -284,16 +295,15 @@ class StaticComponentHandler(ComponentHandler):
             return self.enrich(self._component(component_id))
         except (OSError, ComponentError) as exc:
             shutil.rmtree(staging, ignore_errors=True)
-            if not target.exists() and backup.exists():
+            if target.exists() and self._owned_target(target, component):
+                shutil.rmtree(target, ignore_errors=True)
+            if backup.exists():
                 backup.rename(target)
+                self._write_log(log_path, "restored previous static release")
             self.db.update(
                 "services",
                 component_id,
-                {
-                    "status": "failed",
-                    "last_error": str(exc),
-                    "updated_at": utc_now(),
-                },
+                {"status": "failed", "last_error": str(exc), "updated_at": utc_now()},
             )
             self._write_log(log_path, f"publication failed: {exc}")
             if isinstance(exc, ComponentError):
@@ -309,13 +319,9 @@ class StaticComponentHandler(ComponentHandler):
         target = Path(target_value).resolve()
         log_path = Path(component["log_path"])
         try:
-            marker_path = target / ".dpm-component"
             if target.exists():
-                marker = marker_path.read_text(encoding="utf-8").strip() if marker_path.exists() else ""
-                if marker != self._marker(component):
-                    raise ComponentError(
-                        f"Refusing to remove unowned static target: {target}"
-                    )
+                if not self._owned_target(target, component):
+                    raise ComponentError(f"Refusing to remove unowned static target: {target}")
                 shutil.rmtree(target)
             self.db.update(
                 "services",
@@ -387,8 +393,7 @@ class ComponentManager:
             raise ComponentError("Component not found")
         return component
 
-    def get_component(self, component_id: int) -> dict[str, Any]:
-        component = self.get_component_raw(component_id)
+    def _enrich(self, component: dict[str, Any]) -> dict[str, Any]:
         item = self.handler_for(component).enrich(component)
         item["component_type"] = str(component.get("component_type") or "process")
         item["config"] = Database.decode_json(component.get("config_json"), {})
@@ -396,6 +401,9 @@ class ComponentManager:
         item["depends_on"] = Database.decode_json(component.get("depends_on_json"), [])
         item["actions"] = self.handler_for(component).action_labels
         return item
+
+    def get_component(self, component_id: int) -> dict[str, Any]:
+        return self._enrich(self.get_component_raw(component_id))
 
     def list_components(self, project_id: int | None = None) -> list[dict[str, Any]]:
         query = """
@@ -411,10 +419,15 @@ class ComponentManager:
             query += " WHERE s.project_id = ?"
             params.append(project_id)
         query += " ORDER BY p.name, s.name"
-        return [self.get_component(int(row["id"])) for row in self.db.fetchall(query, params)]
+        return [self._enrich(row) for row in self.db.fetchall(query, params)]
+
+    def _assert_project_running(self, component: dict[str, Any]) -> None:
+        if str(component.get("project_desired_state") or "running") != "running":
+            raise ComponentError("Project is stopped; start the project first")
 
     def start_component(self, component_id: int) -> dict[str, Any]:
         component = self.get_component_raw(component_id)
+        self._assert_project_running(component)
         return self.handler_for(component).start(component_id)
 
     def stop_component(self, component_id: int) -> dict[str, Any]:
@@ -423,6 +436,7 @@ class ComponentManager:
 
     def restart_component(self, component_id: int) -> dict[str, Any]:
         component = self.get_component_raw(component_id)
+        self._assert_project_running(component)
         return self.handler_for(component).restart(component_id)
 
     def delete_component(self, component_id: int) -> None:
@@ -471,12 +485,11 @@ class ComponentManager:
 
     def start_project(self, project_id: int) -> None:
         for component in self._ordered_project_components(project_id, enabled_only=True):
+            # ProjectManager sets desired_state=running before entering here.
             self.start_component(int(component["id"]))
 
     def stop_project(self, project_id: int) -> None:
-        components = list(
-            reversed(self._ordered_project_components(project_id, enabled_only=False))
-        )
+        components = list(reversed(self._ordered_project_components(project_id, enabled_only=False)))
         for component in components:
             try:
                 self.stop_component(int(component["id"]))
@@ -503,4 +516,4 @@ class ComponentManager:
         return self.get_component_raw(component_id)
 
     def enrich_service(self, component: dict[str, Any]) -> dict[str, Any]:
-        return self.handler_for(component).enrich(component)
+        return self._enrich(component)
