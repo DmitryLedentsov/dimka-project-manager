@@ -84,6 +84,7 @@ class LifecycleMixin:
             exit_code = process.poll()
             if exit_code is not None:
                 message = f"Process exited during startup with code {exit_code}"
+                self._processes.pop(service_id, None)
                 self.db.update(
                     "services",
                     service_id,
@@ -91,6 +92,7 @@ class LifecycleMixin:
                         "pid": None,
                         "status": "failed",
                         "exit_code": exit_code,
+                        "stopped_at": utc_now(),
                         "last_error": message,
                         "updated_at": utc_now(),
                     },
@@ -99,13 +101,25 @@ class LifecycleMixin:
 
             healthcheck = Database.decode_json(service.get("healthcheck_json"), None)
             if healthcheck:
-                healthy, error = self._wait_for_healthcheck(healthcheck, cwd, environment)
+                healthy, error = self._wait_for_healthcheck(
+                    healthcheck,
+                    cwd,
+                    environment,
+                    process=process,
+                )
                 if not healthy:
+                    exit_code = process.poll()
+                    failed = exit_code is not None
+                    if failed:
+                        self._processes.pop(service_id, None)
                     self.db.update(
                         "services",
                         service_id,
                         {
-                            "status": "unhealthy",
+                            "pid": None if failed else process.pid,
+                            "status": "failed" if failed else "unhealthy",
+                            "exit_code": exit_code,
+                            "stopped_at": utc_now() if failed else None,
                             "last_error": error,
                             "updated_at": utc_now(),
                         },
@@ -124,6 +138,8 @@ class LifecycleMixin:
         healthcheck: dict[str, Any],
         cwd: Path,
         environment: dict[str, str],
+        *,
+        process: subprocess.Popen[Any] | None = None,
     ) -> tuple[bool, str | None]:
         check_type = str(healthcheck.get("type", "http")).lower()
         timeout = max(1, int(healthcheck.get("timeout_seconds", 30)))
@@ -132,6 +148,10 @@ class LifecycleMixin:
         last_error: str | None = None
 
         while time.monotonic() < deadline:
+            if process is not None:
+                exit_code = process.poll()
+                if exit_code is not None:
+                    return False, f"Process exited during startup with code {exit_code}"
             try:
                 if check_type == "http":
                     url = str(healthcheck["url"])
