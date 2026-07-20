@@ -36,7 +36,7 @@ class DpmClient:
             headers={
                 "Content-Type": "application/json",
                 "X-DPM-Token": self.token,
-                "User-Agent": "dpm-cli/0.1",
+                "User-Agent": "dpm-cli/0.2",
             },
         )
         try:
@@ -52,35 +52,46 @@ class DpmClient:
             raise CliError(f"Cannot connect to DPM daemon: {exc.reason}") from exc
 
 
-def print_services(services: list[dict[str, Any]]) -> None:
-    if not services:
-        print("No services")
+def print_components(components: list[dict[str, Any]]) -> None:
+    if not components:
+        print("No components")
         return
-    rows = [
-        (
-            str(service["id"]),
-            f"{service['project_name']}/{service['name']}",
-            service["status"].upper(),
-            str(service.get("pid") or "-"),
-            (service.get("deployed_commit") or "-")[:8],
+    rows = []
+    for component in components:
+        runtime = "-"
+        if component.get("component_type") == "process":
+            runtime = str(component.get("pid") or "-")
+        elif component.get("component_type") == "static":
+            runtime = str(component.get("target") or "-")
+        rows.append(
+            (
+                str(component["id"]),
+                f"{component['project_name']}/{component['name']}",
+                str(component.get("component_type") or "process").upper(),
+                str(component["status"]).upper(),
+                runtime,
+                (component.get("deployed_commit") or "-")[:8],
+            )
         )
-        for service in services
-    ]
-    header = ["ID", "SERVICE", "STATUS", "PID", "COMMIT"]
-    widths = [
-        max(len(row[index]) for row in (header, *rows))
-        for index in range(len(header))
-    ]
+    header = ["ID", "COMPONENT", "TYPE", "STATUS", "RUNTIME/TARGET", "COMMIT"]
+    widths = [max(len(row[index]) for row in (header, *rows)) for index in range(len(header))]
     print("  ".join(value.ljust(widths[index]) for index, value in enumerate(header)))
     print("  ".join("-" * width for width in widths))
     for row in rows:
         print("  ".join(value.ljust(widths[index]) for index, value in enumerate(row)))
 
 
+def add_component_commands(parent: argparse._SubParsersAction[Any]) -> None:
+    parent.add_parser("list")
+    for action in ("start", "stop", "restart", "delete"):
+        command = parent.add_parser(action)
+        command.add_argument("component_id", type=int)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="dpm", description="Dimka Project Manager CLI")
     subparsers = parser.add_subparsers(dest="group", required=True)
-    subparsers.add_parser("status", help="Show all services")
+    subparsers.add_parser("status", help="Show project and component state")
 
     project = subparsers.add_parser("project", help="Project operations")
     project_sub = project.add_subparsers(dest="action", required=True)
@@ -90,23 +101,24 @@ def main(argv: list[str] | None = None) -> int:
     add.add_argument("--branch", default="master")
     add.add_argument("--name")
     add.add_argument("--no-auto-update", action="store_true")
-    check = project_sub.add_parser("check")
-    check.add_argument("project_id", type=int)
-    deploy = project_sub.add_parser("deploy")
-    deploy.add_argument("project_id", type=int)
+    for action in ("check", "deploy", "redeploy", "start", "stop"):
+        command = project_sub.add_parser(action)
+        command.add_argument("project_id", type=int)
     remove = project_sub.add_parser("remove")
     remove.add_argument("project_id", type=int)
     remove.add_argument("--yes", action="store_true")
 
-    service = subparsers.add_parser("service", help="Service operations")
-    service_sub = service.add_subparsers(dest="action", required=True)
-    service_sub.add_parser("list")
-    for action in ("start", "stop", "restart", "delete"):
-        command = service_sub.add_parser(action)
-        command.add_argument("service_id", type=int)
+    component = subparsers.add_parser("component", help="Component operations")
+    component_sub = component.add_subparsers(dest="action", required=True)
+    add_component_commands(component_sub)
 
-    logs = subparsers.add_parser("logs", help="Show service logs")
-    logs.add_argument("service_id", type=int)
+    # Compatibility alias retained for existing scripts.
+    service = subparsers.add_parser("service", help="Alias for component")
+    service_sub = service.add_subparsers(dest="action", required=True)
+    add_component_commands(service_sub)
+
+    logs = subparsers.add_parser("logs", help="Show component logs")
+    logs.add_argument("component_id", type=int)
     logs.add_argument("--lines", type=int, default=200)
     logs.add_argument("--follow", "-f", action="store_true")
 
@@ -116,11 +128,19 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.group == "status":
             data = client.request("GET", "/dashboard")
-            print_services(data["services"])
+            for project_item in data["projects"]:
+                print(
+                    f"{project_item['id']:>3}  {project_item['name']:<28} "
+                    f"{project_item['actual_state']:<10} desired={project_item['desired_state']:<7} "
+                    f"{project_item['ready_count']}/{project_item['component_count']} ready"
+                )
+            print()
+            print_components(data["components"])
             stats = data["stats"]
             print(
-                f"\n{stats['running']}/{stats['services']} running, "
-                f"{stats['failed']} failed, {stats['deploying']} deploying"
+                f"\n{stats['projects']} projects, {stats['ready']}/{stats['components']} "
+                f"components ready, {stats['attention']} need attention, "
+                f"{stats['deploying']} deploying"
             )
             return 0
 
@@ -130,7 +150,7 @@ def main(argv: list[str] | None = None) -> int:
                 for item in data["projects"]:
                     print(
                         f"{item['id']:>3}  {item['name']:<28} "
-                        f"{item['deploy_status']:<12} {item['branch']:<16} "
+                        f"{item['actual_state']:<10} {item['branch']:<16} "
                         f"{(item.get('deployed_commit') or '-')[:10]}"
                     )
             elif args.action == "add":
@@ -145,9 +165,9 @@ def main(argv: list[str] | None = None) -> int:
                     },
                 )
                 print(f"Project queued: {data['project']['name']} (id={data['project']['id']})")
-            elif args.action in {"check", "deploy"}:
+            elif args.action in {"check", "deploy", "redeploy", "start", "stop"}:
                 client.request("POST", f"/projects/{args.project_id}/{args.action}", {})
-                print(f"Project {args.action} queued")
+                print(f"Project {args.action} accepted")
             elif args.action == "remove":
                 if not args.yes:
                     answer = input(f"Delete project {args.project_id} and its working copy? [y/N] ")
@@ -157,18 +177,18 @@ def main(argv: list[str] | None = None) -> int:
                 print("Project removed")
             return 0
 
-        if args.group == "service":
+        if args.group in {"component", "service"}:
             if args.action == "list":
-                data = client.request("GET", "/services")
-                print_services(data["services"])
+                data = client.request("GET", "/components")
+                print_components(data["components"])
             elif args.action == "delete":
-                client.request("DELETE", f"/services/{args.service_id}")
-                print("Service deleted")
+                client.request("DELETE", f"/components/{args.component_id}")
+                print("Component deleted")
             else:
                 data = client.request(
-                    "POST", f"/services/{args.service_id}/{args.action}", {}
+                    "POST", f"/components/{args.component_id}/{args.action}", {}
                 )
-                item = data["service"]
+                item = data["component"]
                 print(f"{item['project_name']}/{item['name']}: {item['status']}")
             return 0
 
@@ -176,7 +196,9 @@ def main(argv: list[str] | None = None) -> int:
             previous = None
             while True:
                 query = urllib.parse.urlencode({"lines": args.lines})
-                data = client.request("GET", f"/services/{args.service_id}/logs?{query}")
+                data = client.request(
+                    "GET", f"/components/{args.component_id}/logs?{query}"
+                )
                 text = data.get("logs", "")
                 if text != previous:
                     if args.follow and previous is not None:
