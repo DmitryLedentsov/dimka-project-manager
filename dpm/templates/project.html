@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}{{ project_name }} · DPM{% endblock %}
+{% block content %}
+<section class="infra-service-head project-detail-head">
+  <div class="infra-breadcrumb"><a href="{{ base_path }}/">PROJECTS</a><span>/</span><strong>{{ project_name }}</strong></div>
+  <div class="infra-service-title">
+    <div><div class="infra-kicker">PROJECT / LOGICAL DEPLOYMENT UNIT</div><h1 id="project-name">{{ project_name }}</h1><p id="project-subtitle">Loading repository and component state...</p></div>
+    <div class="status-pill status-unknown infra-status-large" id="project-status"><i></i><span>LOADING</span></div>
+  </div>
+  <div class="project-primary-actions">
+    <button class="button button-primary" data-project-action="deploy" type="button">DEPLOY</button>
+    <button class="button button-secondary" data-project-action="redeploy" type="button">REDEPLOY</button>
+    <button class="button button-secondary" id="project-start" data-project-action="start" type="button">START PROJECT</button>
+    <button class="button button-danger-outline" id="project-stop" data-project-action="stop" type="button">STOP PROJECT</button>
+  </div>
+</section>
+
+<div class="detail-grid infra-detail-grid project-detail-grid">
+  <section class="panel repository-panel infra-panel">
+    <header class="panel-header infra-panel-header"><div><div class="eyebrow">SOURCE / GIT</div><h2>Repository</h2></div><button class="icon-button" id="check-project" title="Check now">↻</button></header>
+    <dl class="info-list infra-info-list">
+      <div><dt>REMOTE</dt><dd id="repo-url">—</dd></div>
+      <div><dt>BRANCH</dt><dd id="repo-branch">—</dd></div>
+      <div><dt>DEPLOYED</dt><dd><code id="repo-deployed">—</code></dd></div>
+      <div><dt>REMOTE COMMIT</dt><dd><code id="repo-remote">—</code></dd></div>
+      <div><dt>LAST DEPLOY</dt><dd id="repo-last-deploy">—</dd></div>
+      <div><dt>MESSAGE</dt><dd id="repo-message">—</dd></div>
+    </dl>
+    <div class="button-row infra-button-row"><label class="inline-toggle"><input id="auto-update" type="checkbox"><i></i><span>AUTO DEPLOY</span></label><span class="project-desired">DESIRED <b id="desired-state">—</b></span></div>
+  </section>
+
+  <section class="panel infra-panel project-summary-panel">
+    <header class="panel-header infra-panel-header"><div><div class="eyebrow">PROJECT / COMPONENT SUMMARY</div><h2>Control state</h2></div><span class="infra-process-mark">TREE</span></header>
+    <div class="runtime-metrics infra-runtime-metrics"><div><span>COMPONENTS</span><strong id="summary-total">—</strong></div><div><span>READY</span><strong id="summary-ready">—</strong></div><div><span>FAILED</span><strong id="summary-failed">—</strong></div><div><span>UPDATE</span><strong id="summary-update">—</strong></div></div>
+    <dl class="info-list compact infra-info-list"><div><dt>DEPLOY STATUS</dt><dd id="deploy-status">—</dd></div><div><dt>DEPLOY STAGE</dt><dd id="deploy-stage">—</dd></div><div><dt>LAST ERROR</dt><dd class="error-text" id="project-error">—</dd></div></dl>
+  </section>
+</div>
+
+<section class="panel infra-panel project-components-panel">
+  <header class="panel-header infra-panel-header"><div><div class="eyebrow">CHILDREN / TYPE HANDLERS</div><h2>Components</h2></div><span class="sync-label"><i></i> INDEPENDENT LIFECYCLES</span></header>
+  <div id="project-components" class="project-component-list"></div>
+</section>
+
+<section class="panel logs-panel infra-panel infra-logs-panel">
+  <header class="panel-header infra-panel-header"><div><div class="eyebrow">PROJECT DEPLOYMENT / BUILD + APPLY</div><h2>Latest deployment log</h2></div><div class="panel-tools"><label class="inline-toggle"><input id="follow-project-log" type="checkbox" checked><i></i><span>FOLLOW</span></label><button class="icon-button" id="refresh-project-log">↻</button></div></header>
+  <div class="terminal-head infra-terminal-head"><span>DEPLOY</span><code>latest attempt</code><b>PROJECT LOG</b></div>
+  <pre class="log-console infra-log-console" id="project-log-console">Waiting for deployment log...</pre>
+</section>
+
+<section class="danger-zone infra-danger-zone"><div><div class="eyebrow danger">DESTRUCTIVE OPERATION</div><h3>Delete project</h3><p>Stops every child component and removes the managed checkout, logs and DPM records.</p></div><button class="button button-danger-outline" id="delete-project" type="button">DELETE PROJECT</button></section>
+<input type="hidden" id="project-id" value="{{ project_id }}">
+{% endblock %}
+{% block scripts %}<script src="{{ base_path }}/static/js/project.js"></script>{% endblock %}
