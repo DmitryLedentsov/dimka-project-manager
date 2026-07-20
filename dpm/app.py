@@ -4,7 +4,6 @@ import atexit
 import functools
 import secrets
 import time
-from pathlib import Path
 from typing import Any, Callable, TypeVar
 
 from flask import (
@@ -20,14 +19,15 @@ from flask import (
 )
 from waitress import serve
 
+from .components import ComponentError
 from .config import Settings, load_settings
 from .context import DpmContext
 from .projects import ProjectError
 from .security import hash_password, verify_password
-from .supervisor import ServiceError
-from .utils import tail_file, utc_now
+from .utils import utc_now
 
 F = TypeVar("F", bound=Callable[..., Any])
+DPM_VERSION = "0.2.0"
 
 
 def _ensure_admin(context: DpmContext) -> None:
@@ -43,7 +43,13 @@ def _ensure_admin(context: DpmContext) -> None:
         INSERT INTO users (username, password_hash, is_default, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?)
         """,
-        [username, password_hash, 1 if settings.admin_is_default or not settings.admin_password_hash else 0, now, now],
+        [
+            username,
+            password_hash,
+            1 if settings.admin_is_default or not settings.admin_password_hash else 0,
+            now,
+            now,
+        ],
     )
 
 
@@ -124,7 +130,7 @@ def create_app(
             "current_user": user,
             "csrf_token": session.get("csrf_token", ""),
             "default_credentials": bool(user and user.get("is_default")),
-            "dpm_version": "0.1.0",
+            "dpm_version": DPM_VERSION,
         }
 
     @app.route("/")
@@ -147,11 +153,14 @@ def create_app(
         user = context.db.fetchone("SELECT * FROM users WHERE username = ?", [username])
         if not user or not verify_password(password, user["password_hash"]):
             time.sleep(0.35)
-            return render_template(
-                "login.html",
-                error="Неверный логин или пароль",
-                entered_username=username,
-            ), 401
+            return (
+                render_template(
+                    "login.html",
+                    error="Неверный логин или пароль",
+                    entered_username=username,
+                ),
+                401,
+            )
         session.clear()
         session["user_id"] = user["id"]
         session["csrf_token"] = secrets.token_urlsafe(24)
@@ -171,20 +180,41 @@ def create_app(
     def dashboard() -> str:
         return render_template("dashboard.html", active_page="overview")
 
-    @app.route(prefix + "/services/<int:service_id>")
+    @app.route(prefix + "/projects/<int:project_id>")
     @page_login_required
-    def service_page(service_id: int) -> str:
+    def project_page(project_id: int) -> str:
         try:
-            service = context.supervisor.get_service(service_id)
-        except ServiceError:
+            project = context.projects.get_project(project_id)
+        except ProjectError:
             abort(404)
         return render_template(
-            "service.html",
+            "project.html",
             active_page="overview",
-            service_id=service_id,
-            service_name=service["name"],
-            project_name=service["project_name"],
+            project_id=project_id,
+            project_name=project["name"],
         )
+
+    @app.route(prefix + "/components/<int:component_id>")
+    @page_login_required
+    def component_page(component_id: int) -> str:
+        try:
+            component = context.components.get_component(component_id)
+            template = context.components.component_template(component_id)
+        except ComponentError:
+            abort(404)
+        return render_template(
+            template,
+            active_page="overview",
+            component_id=component_id,
+            component_name=component["name"],
+            project_name=component["project_name"],
+            component_type=component["component_type"],
+        )
+
+    @app.route(prefix + "/services/<int:service_id>")
+    @page_login_required
+    def legacy_service_page(service_id: int) -> Response:
+        return redirect(f"{prefix}/components/{service_id}")
 
     @app.route(prefix + "/api/session")
     @api_login_required
@@ -193,33 +223,48 @@ def create_app(
         return jsonify(
             {
                 "ok": True,
-                "user": {"username": user["username"], "is_default": bool(user["is_default"])} if user else None,
-                "version": "0.1.0",
+                "user": {
+                    "username": user["username"],
+                    "is_default": bool(user["is_default"]),
+                }
+                if user
+                else None,
+                "version": DPM_VERSION,
             }
         )
 
     @app.route(prefix + "/api/dashboard")
     @api_login_required
     def api_dashboard() -> Any:
-        services = context.supervisor.list_services()
         projects = context.projects.list_projects()
+        components = [component for project in projects for component in project["components"]]
         stats = {
-            "services": len(services),
-            "running": sum(1 for service in services if service["status"] == "running"),
-            "failed": sum(1 for service in services if service["status"] in {"failed", "unhealthy"}),
+            "projects": len(projects),
+            "components": len(components),
+            "ready": sum(
+                1
+                for component in components
+                if component["status"] in {"running", "ready"}
+            ),
+            "attention": sum(
+                1
+                for project in projects
+                if project["actual_state"] in {"failed", "degraded"}
+            ),
             "deploying": sum(1 for project in projects if project["deploying"]),
         }
         issues = [
             project
             for project in projects
-            if project["deploy_status"] in {"failed", "check_failed"}
+            if project["actual_state"] in {"failed", "degraded"}
         ]
         return jsonify(
             {
                 "ok": True,
                 "stats": stats,
-                "services": services,
                 "projects": projects,
+                "components": components,
+                "services": components,
                 "issues": issues,
             }
         )
@@ -273,8 +318,39 @@ def create_app(
     @api_login_required
     def api_project_deploy(project_id: int) -> Any:
         context.projects.get_project(project_id)
-        accepted = context.projects.schedule_deploy(project_id, reason="manual", force=True)
+        accepted = context.projects.schedule_deploy(
+            project_id, reason="manual deploy", force=False
+        )
         return jsonify({"ok": True, "accepted": accepted}), 202
+
+    @app.route(prefix + "/api/projects/<int:project_id>/redeploy", methods=["POST"])
+    @api_login_required
+    def api_project_redeploy(project_id: int) -> Any:
+        context.projects.get_project(project_id)
+        accepted = context.projects.schedule_deploy(
+            project_id, reason="manual redeploy", force=True
+        )
+        return jsonify({"ok": True, "accepted": accepted}), 202
+
+    @app.route(prefix + "/api/projects/<int:project_id>/start", methods=["POST"])
+    @api_login_required
+    def api_project_start(project_id: int) -> Any:
+        try:
+            return jsonify(
+                {"ok": True, "project": context.projects.start_project(project_id)}
+            )
+        except ProjectError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+
+    @app.route(prefix + "/api/projects/<int:project_id>/stop", methods=["POST"])
+    @api_login_required
+    def api_project_stop(project_id: int) -> Any:
+        try:
+            return jsonify(
+                {"ok": True, "project": context.projects.stop_project(project_id)}
+            )
+        except ProjectError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
 
     @app.route(prefix + "/api/projects/<int:project_id>/logs")
     @api_login_required
@@ -284,74 +360,108 @@ def create_app(
             {"ok": True, "logs": context.projects.latest_deploy_log(project_id, lines)}
         )
 
+    @app.route(prefix + "/api/components")
+    @api_login_required
+    def api_components() -> Any:
+        project_id = request.args.get("project_id")
+        return jsonify(
+            {
+                "ok": True,
+                "components": context.components.list_components(
+                    int(project_id) if project_id else None
+                ),
+            }
+        )
+
+    @app.route(prefix + "/api/components/<int:component_id>")
+    @api_login_required
+    def api_component(component_id: int) -> Any:
+        try:
+            component = context.components.get_component(component_id)
+            project = context.projects.get_project(int(component["project_id"]))
+            return jsonify({"ok": True, "component": component, "project": project})
+        except (ComponentError, ProjectError) as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 404
+
+    def component_action(component_id: int, action: str) -> Any:
+        try:
+            if action == "start":
+                component = context.components.start_component(component_id)
+            elif action == "stop":
+                component = context.components.stop_component(component_id)
+            elif action == "restart":
+                component = context.components.restart_component(component_id)
+            else:
+                raise ComponentError("Unknown component action")
+            return jsonify({"ok": True, "component": component})
+        except ComponentError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+
+    @app.route(prefix + "/api/components/<int:component_id>/start", methods=["POST"])
+    @api_login_required
+    def api_component_start(component_id: int) -> Any:
+        return component_action(component_id, "start")
+
+    @app.route(prefix + "/api/components/<int:component_id>/stop", methods=["POST"])
+    @api_login_required
+    def api_component_stop(component_id: int) -> Any:
+        return component_action(component_id, "stop")
+
+    @app.route(prefix + "/api/components/<int:component_id>/restart", methods=["POST"])
+    @api_login_required
+    def api_component_restart(component_id: int) -> Any:
+        return component_action(component_id, "restart")
+
+    @app.route(prefix + "/api/components/<int:component_id>", methods=["DELETE"])
+    @api_login_required
+    def api_component_delete(component_id: int) -> Any:
+        try:
+            context.components.delete_component(component_id)
+            return jsonify({"ok": True})
+        except ComponentError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 404
+
+    @app.route(prefix + "/api/components/<int:component_id>/logs")
+    @api_login_required
+    def api_component_logs(component_id: int) -> Any:
+        try:
+            lines = min(2000, max(20, int(request.args.get("lines", 250))))
+            payload = context.components.component_logs(component_id, lines)
+            return jsonify({"ok": True, **payload})
+        except ComponentError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 404
+
+    # Compatibility API for existing DPM CLI clients.
     @app.route(prefix + "/api/services")
     @api_login_required
     def api_services() -> Any:
-        return jsonify({"ok": True, "services": context.supervisor.list_services()})
+        components = context.components.list_components()
+        return jsonify({"ok": True, "services": components, "components": components})
 
     @app.route(prefix + "/api/services/<int:service_id>")
     @api_login_required
     def api_service(service_id: int) -> Any:
-        try:
-            service = context.supervisor.enrich_service(context.supervisor.get_service(service_id))
-            project = context.projects.get_project(int(service["project_id"]))
-            return jsonify({"ok": True, "service": service, "project": project})
-        except (ServiceError, ProjectError) as exc:
-            return jsonify({"ok": False, "error": str(exc)}), 404
-
-    def service_action(service_id: int, action: str) -> Any:
-        try:
-            if action == "start":
-                service = context.supervisor.enable_service(service_id)
-            elif action == "stop":
-                service = context.supervisor.stop_service(service_id, disable=True)
-            elif action == "restart":
-                service = context.supervisor.restart_service(service_id)
-            else:
-                raise ServiceError("Unknown action")
-            return jsonify({"ok": True, "service": service})
-        except ServiceError as exc:
-            return jsonify({"ok": False, "error": str(exc)}), 400
+        return api_component(service_id)
 
     @app.route(prefix + "/api/services/<int:service_id>/start", methods=["POST"])
     @api_login_required
     def api_service_start(service_id: int) -> Any:
-        return service_action(service_id, "start")
+        return component_action(service_id, "start")
 
     @app.route(prefix + "/api/services/<int:service_id>/stop", methods=["POST"])
     @api_login_required
     def api_service_stop(service_id: int) -> Any:
-        return service_action(service_id, "stop")
+        return component_action(service_id, "stop")
 
     @app.route(prefix + "/api/services/<int:service_id>/restart", methods=["POST"])
     @api_login_required
     def api_service_restart(service_id: int) -> Any:
-        return service_action(service_id, "restart")
-
-    @app.route(prefix + "/api/services/<int:service_id>", methods=["DELETE"])
-    @api_login_required
-    def api_service_delete(service_id: int) -> Any:
-        try:
-            context.supervisor.delete_service(service_id)
-            return jsonify({"ok": True})
-        except ServiceError as exc:
-            return jsonify({"ok": False, "error": str(exc)}), 404
+        return component_action(service_id, "restart")
 
     @app.route(prefix + "/api/services/<int:service_id>/logs")
     @api_login_required
     def api_service_logs(service_id: int) -> Any:
-        try:
-            service = context.supervisor.get_service(service_id)
-        except ServiceError as exc:
-            return jsonify({"ok": False, "error": str(exc)}), 404
-        lines = min(2000, max(20, int(request.args.get("lines", 250))))
-        return jsonify(
-            {
-                "ok": True,
-                "logs": tail_file(Path(service["log_path"]), lines),
-                "path": service["log_path"],
-            }
-        )
+        return api_component_logs(service_id)
 
     @app.route(prefix + "/api/account/password", methods=["POST"])
     @api_login_required
