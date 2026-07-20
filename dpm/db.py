@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS projects (
     repo_path TEXT NOT NULL,
     auto_update INTEGER NOT NULL DEFAULT 1,
     poll_interval INTEGER NOT NULL DEFAULT 60,
+    desired_state TEXT NOT NULL DEFAULT 'running',
     remote_commit TEXT,
     attempted_commit TEXT,
     deployed_commit TEXT,
@@ -41,15 +42,20 @@ CREATE TABLE IF NOT EXISTS projects (
     updated_at TEXT NOT NULL
 );
 
+-- The historical table name is kept for a zero-downtime SQLite migration.
+-- Rows are generic DPM components; component_type selects a registered handler.
 CREATE TABLE IF NOT EXISTS services (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     name TEXT NOT NULL,
-    command_json TEXT NOT NULL,
+    component_type TEXT NOT NULL DEFAULT 'process',
+    config_json TEXT NOT NULL DEFAULT '{}',
+    runtime_json TEXT NOT NULL DEFAULT '{}',
+    command_json TEXT NOT NULL DEFAULT '[]',
     working_directory TEXT NOT NULL DEFAULT '.',
     environment_json TEXT NOT NULL DEFAULT '{}',
     environment_file TEXT,
-    restart_policy TEXT NOT NULL DEFAULT 'always',
+    restart_policy TEXT NOT NULL DEFAULT 'never',
     healthcheck_json TEXT,
     depends_on_json TEXT NOT NULL DEFAULT '[]',
     enabled INTEGER NOT NULL DEFAULT 1,
@@ -96,10 +102,52 @@ class Database:
         connection.execute("PRAGMA foreign_keys=ON")
         return connection
 
+    @staticmethod
+    def _columns(connection: sqlite3.Connection, table: str) -> set[str]:
+        return {str(row[1]) for row in connection.execute(f"PRAGMA table_info({table})")}
+
+    @classmethod
+    def _add_column(
+        cls,
+        connection: sqlite3.Connection,
+        table: str,
+        column: str,
+        declaration: str,
+    ) -> None:
+        if column not in cls._columns(connection, table):
+            connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
+
     def migrate(self) -> None:
         connection = self.connect()
         try:
             connection.executescript(_SCHEMA)
+            self._add_column(
+                connection,
+                "projects",
+                "desired_state",
+                "TEXT NOT NULL DEFAULT 'running'",
+            )
+            self._add_column(
+                connection,
+                "services",
+                "component_type",
+                "TEXT NOT NULL DEFAULT 'process'",
+            )
+            self._add_column(
+                connection,
+                "services",
+                "config_json",
+                "TEXT NOT NULL DEFAULT '{}'",
+            )
+            self._add_column(
+                connection,
+                "services",
+                "runtime_json",
+                "TEXT NOT NULL DEFAULT '{}'",
+            )
+            # Automatic restarts were removed from DPM. Existing rows are migrated
+            # to the explicit operator-controlled lifecycle.
+            connection.execute("UPDATE services SET restart_policy = 'never'")
             connection.commit()
         finally:
             connection.close()
