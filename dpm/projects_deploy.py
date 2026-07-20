@@ -7,10 +7,10 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from .components import ComponentError
 from .gitops import GitError
-from .manifest import ManifestError, ProjectManifest, ServiceDefinition, load_manifest
+from .manifest import ComponentDefinition, ManifestError, ProjectManifest, load_manifest
 from .projects_base import ProjectError
-from .supervisor import ServiceError
 from .utils import slugify, tail_file, utc_now
 
 
@@ -60,19 +60,20 @@ class DeploymentMixin:
                     },
                 )
                 self.db.update("deployments", deployment_id, {"commit_sha": commit.sha})
-                self._write_deploy_log(deployment_log, f"checked out {commit.sha[:12]} {commit.message}")
+                self._write_deploy_log(
+                    deployment_log, f"checked out {commit.sha[:12]} {commit.message}"
+                )
 
                 self._set_deploy_state(project_id, "deploying", "reading_manifest", None)
                 manifest = load_manifest(Path(project["repo_path"]))
                 self._write_deploy_log(
                     deployment_log,
-                    f"manifest loaded: {len(manifest.services)} service(s)",
+                    f"manifest loaded: {len(manifest.components)} component(s)",
                 )
 
-                # A failed first build must still expose the declared services in the
-                # dashboard. Only missing records are added here: existing running
-                # services are not changed or removed until the new build succeeds.
-                self._register_missing_services(project, manifest)
+                # New components become visible before the first build finishes, but
+                # existing component definitions remain untouched until artifacts are valid.
+                self._register_missing_components(project, manifest)
 
                 self._set_deploy_state(project_id, "deploying", "building", None)
                 self.db.update("deployments", deployment_id, {"stage": "building"})
@@ -80,23 +81,35 @@ class DeploymentMixin:
 
                 self._set_deploy_state(project_id, "deploying", "stopping", None)
                 self.db.update("deployments", deployment_id, {"stage": "stopping"})
-                self.supervisor.stop_project(project_id)
+                self.components.stop_project(project_id)
 
-                # The artifacts are valid now, so apply removals and definition changes.
-                self._sync_services(project, manifest)
+                self._set_deploy_state(project_id, "deploying", "applying", None)
+                self.db.update("deployments", deployment_id, {"stage": "applying"})
+                self._sync_components(project, manifest)
 
-                self._set_deploy_state(project_id, "deploying", "starting", None)
-                self.db.update("deployments", deployment_id, {"stage": "starting"})
-                self.supervisor.start_project(project_id)
+                fresh_project = self.db.fetchone(
+                    "SELECT * FROM projects WHERE id = ?", [project_id]
+                ) or project
+                desired_state = str(fresh_project.get("desired_state") or "running")
+                if desired_state == "running":
+                    self._set_deploy_state(project_id, "deploying", "starting", None)
+                    self.db.update("deployments", deployment_id, {"stage": "starting"})
+                    self.components.start_project(project_id)
+                else:
+                    self._write_deploy_log(
+                        deployment_log,
+                        "project desired state is stopped; components remain inactive",
+                    )
 
                 now = utc_now()
+                final_status = "running" if desired_state == "running" else "stopped"
                 self.db.update(
                     "projects",
                     project_id,
                     {
                         "deployed_commit": commit.sha,
                         "last_deployed_at": now,
-                        "deploy_status": "running",
+                        "deploy_status": final_status,
                         "deploy_stage": None,
                         "last_error": None,
                         "updated_at": now,
@@ -113,7 +126,7 @@ class DeploymentMixin:
                     },
                 )
                 self._write_deploy_log(deployment_log, "deployment completed successfully")
-            except (GitError, ManifestError, ServiceError, ProjectError, OSError) as exc:
+            except (GitError, ManifestError, ComponentError, ProjectError, OSError) as exc:
                 stage = self.db.fetchone(
                     "SELECT deploy_stage FROM projects WHERE id = ?", [project_id]
                 )
@@ -191,7 +204,6 @@ class DeploymentMixin:
         lines = [line.strip() for line in tail_file(path, 80).splitlines() if line.strip()]
         if not lines:
             return None
-
         preferred_markers = (
             "ERROR:",
             "[ERROR]",
@@ -206,7 +218,6 @@ class DeploymentMixin:
             lowered = line.lower()
             if any(marker.lower() in lowered for marker in preferred_markers):
                 return line[:420]
-
         for line in reversed(lines):
             if "[deploy]" not in line:
                 return line[:420]
@@ -254,60 +265,71 @@ class DeploymentMixin:
                     message += f" — {detail}"
                 raise ProjectError(message)
 
-    def _service_values(
+    def _component_values(
         self,
         project: dict[str, Any],
-        definition: ServiceDefinition,
+        definition: ComponentDefinition,
         now: str,
     ) -> dict[str, Any]:
-        log_path = self.settings.log_dir / project["name"] / f"{slugify(definition.name)}.log"
+        log_path = (
+            self.settings.log_dir
+            / project["name"]
+            / f"{slugify(definition.name)}.log"
+        )
+        process = definition.type_name == "process"
         return {
-            "command_json": json.dumps(definition.command_for_storage()),
-            "working_directory": definition.working_directory,
-            "environment_json": json.dumps(definition.environment),
-            "environment_file": definition.environment_file,
-            "restart_policy": definition.restart_policy,
-            "healthcheck_json": json.dumps(definition.healthcheck) if definition.healthcheck else None,
+            "component_type": definition.type_name,
+            "config_json": json.dumps(definition.config),
+            "command_json": json.dumps(definition.command if process else []),
+            "working_directory": definition.cwd if process else ".",
+            "environment_json": json.dumps(definition.env if process else {}),
+            "environment_file": definition.env_file if process else None,
+            "restart_policy": "never",
+            "healthcheck_json": json.dumps(definition.process_healthcheck)
+            if process and definition.process_healthcheck
+            else None,
             "depends_on_json": json.dumps(definition.depends_on),
             "enabled": 1 if definition.enabled else 0,
             "log_path": str(log_path),
             "updated_at": now,
         }
 
-    def _insert_service(
+    def _insert_component(
         self,
         project: dict[str, Any],
-        definition: ServiceDefinition,
+        definition: ComponentDefinition,
         values: dict[str, Any],
         now: str,
     ) -> None:
         self.db.execute(
             """
             INSERT INTO services (
-                project_id, name, command_json, working_directory,
-                environment_json, environment_file, restart_policy,
-                healthcheck_json, depends_on_json, enabled, status,
-                log_path, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'stopped', ?, ?, ?)
+                project_id, name, component_type, config_json, runtime_json,
+                command_json, working_directory, environment_json,
+                environment_file, restart_policy, healthcheck_json,
+                depends_on_json, enabled, status, log_path, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, '{}', ?, ?, ?, ?, 'never', ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 project["id"],
                 definition.name,
+                definition.type_name,
+                values["config_json"],
                 values["command_json"],
-                definition.working_directory,
+                values["working_directory"],
                 values["environment_json"],
-                definition.environment_file,
-                definition.restart_policy,
+                values["environment_file"],
                 values["healthcheck_json"],
                 values["depends_on_json"],
                 values["enabled"],
+                definition.initial_status,
                 values["log_path"],
                 now,
                 now,
             ],
         )
 
-    def _register_missing_services(
+    def _register_missing_components(
         self,
         project: dict[str, Any],
         manifest: ProjectManifest,
@@ -319,13 +341,13 @@ class DeploymentMixin:
             )
         }
         now = utc_now()
-        for definition in manifest.services:
+        for definition in manifest.components:
             if definition.name in existing_names:
                 continue
-            values = self._service_values(project, definition, now)
-            self._insert_service(project, definition, values, now)
+            values = self._component_values(project, definition, now)
+            self._insert_component(project, definition, values, now)
 
-    def _sync_services(self, project: dict[str, Any], manifest: ProjectManifest) -> None:
+    def _sync_components(self, project: dict[str, Any], manifest: ProjectManifest) -> None:
         now = utc_now()
         existing = {
             row["name"]: row
@@ -333,24 +355,34 @@ class DeploymentMixin:
                 "SELECT * FROM services WHERE project_id = ?", [project["id"]]
             )
         }
-        configured_names = {service.name for service in manifest.services}
+        configured_names = {component.name for component in manifest.components}
 
         for name, row in existing.items():
             if name not in configured_names:
-                self.supervisor.delete_service(row["id"])
+                self.components.delete_component(int(row["id"]))
 
-        for definition in manifest.services:
-            values = self._service_values(project, definition, now)
-            if definition.name in existing:
-                self.db.update("services", existing[definition.name]["id"], values)
+        for definition in manifest.components:
+            values = self._component_values(project, definition, now)
+            row = existing.get(definition.name)
+            if row:
+                if str(row.get("component_type") or "process") != definition.type_name:
+                    values.update(
+                        {
+                            "runtime_json": "{}",
+                            "pid": None,
+                            "status": definition.initial_status,
+                            "last_error": None,
+                        }
+                    )
+                self.db.update("services", int(row["id"]), values)
             else:
-                self._insert_service(project, definition, values, now)
+                self._insert_component(project, definition, values, now)
 
     def delete_project(self, project_id: int, *, purge: bool = True) -> None:
         project = self.db.fetchone("SELECT * FROM projects WHERE id = ?", [project_id])
         if not project:
             raise ProjectError("Project not found")
-        self.supervisor.stop_project(project_id)
+        self.components.stop_project(project_id)
         self.db.execute("DELETE FROM projects WHERE id = ?", [project_id])
         if purge:
             shutil.rmtree(Path(project["repo_path"]).parent, ignore_errors=True)
