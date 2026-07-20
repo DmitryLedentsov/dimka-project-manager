@@ -1,36 +1,14 @@
 {% extends "base.html" %}
 {% block title %}Operator access · DPM{% endblock %}
-{% block body_class %}login-page infra-login-page{% endblock %}
+{% block body_class %}login-page{% endblock %}
 {% block public_content %}
-<div class="infra-login-shell">
-  <section class="infra-login-system">
-    <div class="infra-login-brand"><span class="infra-brand-mark large"><b>D</b><i></i></span><div><strong>DPM</strong><small>DIMKA PROJECT MANAGER</small></div></div>
-    <div class="infra-login-visual" aria-hidden="true">
-      <div class="login-axis axis-x"></div><div class="login-axis axis-y"></div>
-      <div class="login-ring ring-a"></div><div class="login-ring ring-b"></div>
-      <div class="login-core"><span>NODE</span><b>01</b><small>ONLINE</small></div>
-      <div class="login-vector vector-a"></div><div class="login-vector vector-b"></div><div class="login-vector vector-c"></div>
-      <div class="login-label label-a">GIT / POLL</div><div class="login-label label-b">PROC / CTRL</div><div class="login-label label-c">BUILD / RUN</div>
-    </div>
-    <div class="infra-login-copy"><div class="infra-kicker">SINGLE NODE INFRASTRUCTURE CONTROL</div><h1>Operate every project<br>from one surface.</h1><p>Repository polling, deployments, process supervision and live logs.</p></div>
-    <div class="infra-login-telemetry"><span><i></i> DAEMON READY</span><span>API LOCAL</span><span>v{{ dpm_version }}</span></div>
+<div class="login-shell">
+  <section class="login-brand">
+    <div class="brand big"><span class="brand-mark">D</span><span><strong>DPM</strong><small>DEPLOY PROJECT MANAGER</small></span></div>
+    <div class="compose-diagram"><div>GIT</div><i>→</i><div>COMPOSE</div><i>→</i><div>CONTAINERS</div></div>
+    <div><div class="eyebrow">SELF-HOSTED DEPLOYMENT CONTROL</div><h1>Projects above.<br>Docker underneath.</h1><p>DPM watches Git repositories, records deployments and manages Docker Compose stacks without inventing another runtime.</p></div>
+    <footer><span><i></i> CONTROL PLANE READY</span><span>v{{ dpm_version }}</span></footer>
   </section>
-
-  <section class="infra-login-panel">
-    <div class="infra-login-panel-head"><span>AUTH / OPERATOR</span><b>SECURE ACCESS</b></div>
-    <div class="login-form-wrap infra-login-form-wrap">
-      <div class="eyebrow">CONTROL CONSOLE</div>
-      <h2>Operator sign in</h2>
-      <p>Authenticate to access the infrastructure node.</p>
-      {% if error %}<div class="form-error">AUTH FAILURE / {{ error }}</div>{% endif %}
-      <form method="post" class="form-stack login-form infra-login-form">
-        <label><span>OPERATOR ID</span><input name="username" value="{{ entered_username or 'admin' }}" autocomplete="username" autofocus required></label>
-        <label><span>ACCESS KEY</span><input name="password" type="password" autocomplete="current-password" required></label>
-        <button class="button button-primary button-full" type="submit">ENTER CONTROL SURFACE <b>→</b></button>
-      </form>
-      <div class="default-access"><span>DEFAULT ACCESS</span><code>admin / admin</code></div>
-    </div>
-    <footer><span>ENDPOINT</span><i></i><code>{{ public_url }}</code></footer>
-  </section>
+  <section class="login-panel"><div class="eyebrow">AUTH / OPERATOR</div><h2>Sign in</h2><p>Authenticate to manage Compose projects on this node.</p>{% if error %}<div class="form-error">{{ error }}</div>{% endif %}<form method="post" class="form-stack"><label><span>OPERATOR</span><input name="username" value="{{ entered_username or 'admin' }}" autocomplete="username" autofocus required></label><label><span>PASSWORD</span><input name="password" type="password" autocomplete="current-password" required></label><button class="button primary full" type="submit">ENTER CONTROL PLANE →</button></form><div class="login-default"><span>DEFAULT</span><code>admin / admin</code></div><footer><span>ENDPOINT</span><code>{{ public_url }}</code></footer></section>
 </div>
 {% endblock %}

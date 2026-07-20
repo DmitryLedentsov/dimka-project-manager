@@ -1,50 +1,9 @@
 {% extends "base.html" %}
 {% block title %}{{ service_name }} · DPM{% endblock %}
 {% block content %}
-<section class="infra-service-head">
-  <div class="infra-breadcrumb"><a href="{{ base_path }}/">INFRASTRUCTURE</a><span>/</span><b>{{ project_name }}</b><span>/</span><strong>{{ service_name }}</strong></div>
-  <div class="infra-service-title">
-    <div><div class="infra-kicker" id="service-project">{{ project_name }}</div><h1 id="service-name">{{ service_name }}</h1><p id="service-subtitle">Loading process telemetry...</p></div>
-    <div class="status-pill status-unknown infra-status-large" id="service-status"><i></i><span>LOADING</span></div>
-  </div>
-</section>
-
-<div class="detail-grid infra-detail-grid">
-  <section class="panel repository-panel infra-panel">
-    <header class="panel-header infra-panel-header"><div><div class="eyebrow">SOURCE / GIT CONTROL</div><h2>Repository</h2></div><button class="icon-button" id="check-project" title="Check now">↻</button></header>
-    <div class="infra-repo-chain"><span>ORIGIN</span><i></i><b id="repo-branch">—</b><i></i><code id="repo-short-commit">—</code></div>
-    <dl class="info-list infra-info-list">
-      <div><dt>REMOTE</dt><dd id="repo-url">—</dd></div>
-      <div><dt>BRANCH</dt><dd id="repo-branch-copy">—</dd></div>
-      <div><dt>DEPLOYED COMMIT</dt><dd><code id="repo-commit">—</code></dd></div>
-      <div><dt>REMOTE COMMIT</dt><dd><code id="repo-remote-commit">—</code></dd></div>
-      <div><dt>COMMIT TIME</dt><dd id="repo-commit-time">—</dd></div>
-      <div><dt>MESSAGE</dt><dd id="repo-message">—</dd></div>
-    </dl>
-    <div class="button-row infra-button-row"><button class="button button-secondary" id="deploy-project" type="button">DEPLOY NOW</button><label class="inline-toggle"><input id="auto-update" type="checkbox"><i></i><span>AUTO UPDATE</span></label></div>
-  </section>
-
-  <section class="panel runtime-panel infra-panel">
-    <header class="panel-header infra-panel-header"><div><div class="eyebrow">RUNTIME / PROCESS ENGINE</div><h2>Service state</h2></div><span class="infra-process-mark">PROC</span></header>
-    <div class="runtime-metrics infra-runtime-metrics"><div><span>PID</span><strong id="runtime-pid">—</strong></div><div><span>UPTIME</span><strong id="runtime-uptime">—</strong></div><div><span>CPU</span><strong id="runtime-cpu">—</strong></div><div><span>MEMORY</span><strong id="runtime-memory">—</strong></div></div>
-    <dl class="info-list compact infra-info-list">
-      <div><dt>COMMAND</dt><dd><code id="runtime-command">—</code></dd></div>
-      <div><dt>WORKING DIRECTORY</dt><dd><code id="runtime-cwd">—</code></dd></div>
-      <div><dt>RESTART POLICY</dt><dd id="runtime-restart">—</dd></div>
-      <div><dt>RESTART COUNT</dt><dd id="runtime-restarts">—</dd></div>
-      <div><dt>LAST ERROR</dt><dd class="error-text" id="runtime-error">—</dd></div>
-    </dl>
-    <div class="service-actions infra-service-actions"><button class="button button-primary" id="action-start" type="button">START</button><button class="button button-secondary" id="action-restart" type="button">RESTART</button><button class="button button-danger-outline" id="action-stop" type="button">STOP</button></div>
-  </section>
-</div>
-
-<section class="panel logs-panel infra-panel infra-logs-panel">
-  <header class="panel-header infra-panel-header"><div><div class="eyebrow">STREAM / STDOUT + STDERR</div><h2>Live process output</h2></div><div class="panel-tools"><label class="inline-toggle"><input id="follow-logs" type="checkbox" checked><i></i><span>FOLLOW</span></label><button class="icon-button" id="refresh-logs">↻</button></div></header>
-  <div class="terminal-head infra-terminal-head"><span>TTY 01</span><code id="log-path">service.log</code><b>CONNECTED</b></div>
-  <pre class="log-console infra-log-console" id="log-console"><span class="muted">Waiting for log stream...</span></pre>
-</section>
-
-<section class="danger-zone infra-danger-zone"><div><div class="eyebrow danger">DESTRUCTIVE OPERATION</div><h3>Remove service definition</h3><p>Stops the process and removes it from DPM. A future deployment can recreate it from <code>dpm.yaml</code>.</p></div><button class="button button-danger-outline" id="delete-service" type="button">DELETE SERVICE</button></section>
-<input type="hidden" id="service-id" value="{{ service_id }}">
+<section class="detail-head"><div class="breadcrumb"><a href="{{ base_path }}/">PROJECTS</a><span>/</span><a href="{{ base_path }}/projects/{{ project_id }}">{{ project_name }}</a><span>/</span><strong>{{ service_name }}</strong></div><div class="detail-title"><div><div class="eyebrow">COMPOSE SERVICE / CONTAINER</div><h1 id="service-name">{{ service_name }}</h1><p id="service-subtitle">Loading Docker state...</p></div><div class="state large" id="service-status"><i></i><span>LOADING</span></div></div><div class="actions"><button class="button primary" data-service-action="start">START</button><button class="button" data-service-action="restart">RESTART</button><button class="button danger" data-service-action="stop">STOP</button><a class="button hidden" id="service-open" href="#" target="_blank" rel="noopener">OPEN</a></div></section>
+<div class="detail-grid"><section class="panel"><header><div><div class="eyebrow">DOCKER / RUNTIME</div><h2>Container</h2></div><span class="tag" id="service-role">SERVICE</span></header><div class="summary"><div><span>CPU</span><strong id="stat-cpu">—</strong></div><div><span>MEMORY</span><strong id="stat-memory">—</strong></div><div><span>NETWORK</span><strong id="stat-network">—</strong></div><div><span>PIDS</span><strong id="stat-pids">—</strong></div></div><dl class="info compact"><div><dt>CONTAINER</dt><dd><code id="container-name">—</code></dd></div><div><dt>CONTAINER ID</dt><dd><code id="container-id">—</code></dd></div><div><dt>STATE</dt><dd id="container-state">—</dd></div><div><dt>HEALTH</dt><dd id="container-health">—</dd></div><div><dt>EXIT CODE</dt><dd id="container-exit">—</dd></div></dl></section><section class="panel"><header><div><div class="eyebrow">COMPOSE / DEFINITION</div><h2>Service context</h2></div><a class="icon-button" href="{{ base_path }}/projects/{{ project_id }}">↗</a></header><dl class="info"><div><dt>PROJECT</dt><dd id="parent-project">{{ project_name }}</dd></div><div><dt>IMAGE</dt><dd><code id="service-image">—</code></dd></div><div><dt>ROLE</dt><dd id="service-role-value">—</dd></div><div><dt>DEPENDS ON</dt><dd id="service-depends">—</dd></div><div><dt>PORTS</dt><dd id="service-ports">—</dd></div><div><dt>URL</dt><dd id="service-url">—</dd></div></dl></section></div>
+<section class="panel log-panel"><header><div><div class="eyebrow">DOCKER COMPOSE LOGS</div><h2>Container output</h2></div><div><label class="follow"><input id="follow-logs" type="checkbox" checked><span>FOLLOW</span></label><button class="icon-button" id="refresh-logs">↻</button></div></header><pre id="service-log">Waiting for logs...</pre></section>
+<input id="project-id" type="hidden" value="{{ project_id }}"><input id="service-id" type="hidden" value="{{ service_name }}">
 {% endblock %}
 {% block scripts %}<script src="{{ base_path }}/static/js/service.js"></script>{% endblock %}

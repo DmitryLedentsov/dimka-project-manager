@@ -1,4 +1,2 @@
 Flask>=3.0,<4
 waitress>=3.0,<4
-PyYAML>=6.0,<7
-psutil>=5.9,<8

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import sqlite3
 import threading
 from pathlib import Path
@@ -25,6 +24,9 @@ CREATE TABLE IF NOT EXISTS projects (
     repository_url TEXT NOT NULL,
     branch TEXT NOT NULL DEFAULT 'master',
     repo_path TEXT NOT NULL,
+    compose_file TEXT NOT NULL DEFAULT 'compose.yml',
+    compose_project_name TEXT NOT NULL,
+    env_file TEXT,
     auto_update INTEGER NOT NULL DEFAULT 1,
     poll_interval INTEGER NOT NULL DEFAULT 60,
     desired_state TEXT NOT NULL DEFAULT 'running',
@@ -42,36 +44,6 @@ CREATE TABLE IF NOT EXISTS projects (
     updated_at TEXT NOT NULL
 );
 
--- The historical table name is kept for a zero-downtime SQLite migration.
--- Rows are generic DPM components; component_type selects a registered handler.
-CREATE TABLE IF NOT EXISTS services (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    name TEXT NOT NULL,
-    component_type TEXT NOT NULL DEFAULT 'process',
-    config_json TEXT NOT NULL DEFAULT '{}',
-    runtime_json TEXT NOT NULL DEFAULT '{}',
-    command_json TEXT NOT NULL DEFAULT '[]',
-    working_directory TEXT NOT NULL DEFAULT '.',
-    environment_json TEXT NOT NULL DEFAULT '{}',
-    environment_file TEXT,
-    restart_policy TEXT NOT NULL DEFAULT 'never',
-    healthcheck_json TEXT,
-    depends_on_json TEXT NOT NULL DEFAULT '[]',
-    enabled INTEGER NOT NULL DEFAULT 1,
-    status TEXT NOT NULL DEFAULT 'stopped',
-    pid INTEGER,
-    started_at TEXT,
-    stopped_at TEXT,
-    exit_code INTEGER,
-    restart_count INTEGER NOT NULL DEFAULT 0,
-    last_error TEXT,
-    log_path TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    UNIQUE(project_id, name)
-);
-
 CREATE TABLE IF NOT EXISTS deployments (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -84,7 +56,6 @@ CREATE TABLE IF NOT EXISTS deployments (
     error TEXT
 );
 
-CREATE INDEX IF NOT EXISTS idx_services_project ON services(project_id);
 CREATE INDEX IF NOT EXISTS idx_deployments_project ON deployments(project_id, id DESC);
 """
 
@@ -107,13 +78,7 @@ class Database:
         return {str(row[1]) for row in connection.execute(f"PRAGMA table_info({table})")}
 
     @classmethod
-    def _add_column(
-        cls,
-        connection: sqlite3.Connection,
-        table: str,
-        column: str,
-        declaration: str,
-    ) -> None:
+    def _add_column(cls, connection: sqlite3.Connection, table: str, column: str, declaration: str) -> None:
         if column not in cls._columns(connection, table):
             connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
 
@@ -121,33 +86,22 @@ class Database:
         connection = self.connect()
         try:
             connection.executescript(_SCHEMA)
-            self._add_column(
-                connection,
-                "projects",
-                "desired_state",
-                "TEXT NOT NULL DEFAULT 'running'",
+            columns = {
+                "compose_file": "TEXT NOT NULL DEFAULT 'compose.yml'",
+                "compose_project_name": "TEXT",
+                "env_file": "TEXT",
+                "desired_state": "TEXT NOT NULL DEFAULT 'running'",
+            }
+            for name, declaration in columns.items():
+                self._add_column(connection, "projects", name, declaration)
+            connection.execute(
+                "UPDATE projects SET compose_file = 'compose.yml' WHERE compose_file IS NULL OR compose_file = ''"
             )
-            self._add_column(
-                connection,
-                "services",
-                "component_type",
-                "TEXT NOT NULL DEFAULT 'process'",
+            connection.execute(
+                "UPDATE projects SET compose_project_name = name WHERE compose_project_name IS NULL OR compose_project_name = ''"
             )
-            self._add_column(
-                connection,
-                "services",
-                "config_json",
-                "TEXT NOT NULL DEFAULT '{}'",
-            )
-            self._add_column(
-                connection,
-                "services",
-                "runtime_json",
-                "TEXT NOT NULL DEFAULT '{}'",
-            )
-            # Automatic restarts were removed from DPM. Existing rows are migrated
-            # to the explicit operator-controlled lifecycle.
-            connection.execute("UPDATE services SET restart_policy = 'never'")
+            # Compose is now the sole runtime. Native service/component state is intentionally removed.
+            connection.execute("DROP TABLE IF EXISTS services")
             connection.commit()
         finally:
             connection.close()
@@ -159,15 +113,6 @@ class Database:
                 cursor = connection.execute(sql, tuple(params))
                 connection.commit()
                 return int(cursor.lastrowid)
-            finally:
-                connection.close()
-
-    def executemany(self, sql: str, rows: Iterable[Iterable[Any]]) -> None:
-        with self._write_lock:
-            connection = self.connect()
-            try:
-                connection.executemany(sql, rows)
-                connection.commit()
             finally:
                 connection.close()
 
@@ -191,16 +136,4 @@ class Database:
         if not values:
             return
         columns = ", ".join(f"{key} = ?" for key in values)
-        self.execute(
-            f"UPDATE {table} SET {columns} WHERE id = ?",
-            [*values.values(), row_id],
-        )
-
-    @staticmethod
-    def decode_json(value: str | None, fallback: Any) -> Any:
-        if not value:
-            return fallback
-        try:
-            return json.loads(value)
-        except json.JSONDecodeError:
-            return fallback
+        self.execute(f"UPDATE {table} SET {columns} WHERE id = ?", [*values.values(), row_id])

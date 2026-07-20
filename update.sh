@@ -1,127 +1,109 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
-
-if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
-  echo "[dpm] update.sh must be run as root" >&2
-  exit 1
-fi
-
+[[ ${EUID:-$(id -u)} -eq 0 ]] || { echo "update.sh must be run as root" >&2; exit 1; }
 SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-APP_DIR="/opt/dimka-project-manager"
-VENV_DIR="$APP_DIR/venv"
+APP_DIR="/opt/deploy-project-manager"
+OLD_APP_DIR="/opt/dimka-project-manager"
 CONFIG_FILE="${DPM_CONFIG_FILE:-/etc/dpm/config.env}"
+NEW_UNIT="deploy-project-manager.service"
+OLD_UNIT="dimka-project-manager.service"
 
-log() { echo "[dpm] $*"; }
-
-install_system_dependencies() {
-  if ! command -v apt-get >/dev/null 2>&1; then
-    echo "[dpm] Install Python 3 with venv/pip, Git and OpenSSH first" >&2
-    exit 1
-  fi
-
-  log "Installing system dependencies"
-  apt-get update
-  DEBIAN_FRONTEND=noninteractive apt-get install -y \
-    python3 python3-venv python3-pip git openssh-client
-}
-
-ensure_virtual_environment() {
-  if [[ -x "$VENV_DIR/bin/python" ]] \
-    && "$VENV_DIR/bin/python" -m pip --version >/dev/null 2>&1; then
-    return
-  fi
-
-  if [[ -d "$VENV_DIR" ]]; then
-    log "Removing incomplete Python virtual environment"
-    rm -rf "$VENV_DIR"
-  fi
-
-  log "Creating Python virtual environment"
-  if ! python3 -m venv "$VENV_DIR"; then
-    install_system_dependencies
-    rm -rf "$VENV_DIR"
-    python3 -m venv "$VENV_DIR"
-  fi
-
-  if ! "$VENV_DIR/bin/python" -m pip --version >/dev/null 2>&1; then
-    echo "[dpm] Virtual environment was created without pip" >&2
-    exit 1
-  fi
-}
-
-write_systemd_unit() {
-  cat > /etc/systemd/system/dimka-project-manager.service <<'EOF_UNIT'
-[Unit]
-Description=Dimka Project Manager
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-WorkingDirectory=/opt/dimka-project-manager
-EnvironmentFile=/etc/dpm/config.env
-Environment=HOME=/var/lib/dpm
-Environment=PYTHONUNBUFFERED=1
-ExecStart=/opt/dimka-project-manager/venv/bin/python -m dpm.app
-Restart=always
-RestartSec=3
-KillMode=process
-TimeoutStopSec=15
-
-[Install]
-WantedBy=multi-user.target
-EOF_UNIT
-}
-
-if ! command -v python3 >/dev/null 2>&1 \
-  || ! python3 -c 'import venv, ensurepip' >/dev/null 2>&1; then
-  install_system_dependencies
-fi
-
-log "Stopping current manager"
-systemctl stop dimka-project-manager.service 2>/dev/null || true
-
-# Early builds ran the manager and all child services under a generated dpm
-# account. Stop those processes before switching the complete stack to root.
-if id dpm >/dev/null 2>&1; then
-  pkill -TERM -u dpm 2>/dev/null || true
-  sleep 1
-  pkill -KILL -u dpm 2>/dev/null || true
-fi
-
-log "Updating manager code"
-mkdir -p "$APP_DIR"
-tar -C "$SOURCE_DIR" \
-  --exclude='.git' --exclude='venv' --exclude='__pycache__' --exclude='*.pyc' \
-  -cf - . | tar -C "$APP_DIR" -xf -
-
-ensure_virtual_environment
-log "Installing Python dependencies"
-"$VENV_DIR/bin/python" -m pip install --disable-pip-version-check --upgrade pip >/dev/null
-"$VENV_DIR/bin/python" -m pip install --disable-pip-version-check -r "$APP_DIR/requirements.txt"
+log(){ echo "[dpm] $*"; }
+log "Stopping old and new manager units"
+systemctl stop "$OLD_UNIT" 2>/dev/null || true
+systemctl stop "$NEW_UNIT" 2>/dev/null || true
 
 if [[ -f "$CONFIG_FILE" ]]; then
   # shellcheck disable=SC1090
   source "$CONFIG_FILE"
 fi
 DATA_DIR="${DPM_DATA_DIR:-/var/lib/dpm}"
-LOG_DIR="${DPM_LOG_DIR:-/var/log/dpm}"
-RUN_DIR="/run/dpm"
-mkdir -p "$DATA_DIR/projects" "$DATA_DIR/.ssh" "$LOG_DIR" "$RUN_DIR"
-
-chown -R root:root "$APP_DIR" "$DATA_DIR" "$LOG_DIR" "$RUN_DIR"
-chmod +x "$APP_DIR/install.sh" "$APP_DIR/update.sh" "$APP_DIR/uninstall.sh" "$APP_DIR/config.sh"
-[[ ! -f "$CONFIG_FILE" ]] || { chown root:root "$CONFIG_FILE"; chmod 600 "$CONFIG_FILE"; }
-
-write_systemd_unit
-systemctl daemon-reload
-
-if id dpm >/dev/null 2>&1; then
-  userdel dpm 2>/dev/null || true
+DB_PATH="$DATA_DIR/dpm.sqlite3"
+if [[ -f "$DB_PATH" ]]; then
+  python3 - "$DB_PATH" <<'PY'
+import os, signal, sqlite3, sys
+path=sys.argv[1]
+try:
+    db=sqlite3.connect(path)
+    tables={row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if "services" in tables:
+        for (pid,) in db.execute("SELECT pid FROM services WHERE pid IS NOT NULL"):
+            try: os.killpg(int(pid), signal.SIGTERM)
+            except (ProcessLookupError, PermissionError, ValueError): pass
+except sqlite3.Error:
+    pass
+PY
 fi
 
-# KillMode=process leaves healthy managed child processes untouched. Failed
-# services remain FAILED and are never started merely because DPM was updated.
-systemctl enable --now dimka-project-manager.service
+bash "$SOURCE_DIR/scripts/install-docker.sh"
+apt-get update
+apt-get install -y python3 python3-venv python3-pip git openssh-client
+install -d -o root -g root -m 700 /etc/dpm "$DATA_DIR" "$DATA_DIR/projects" "$DATA_DIR/.ssh" "${DPM_LOG_DIR:-/var/log/dpm}"
 
-echo "[dpm] Update complete"
+if [[ -f "$CONFIG_FILE" ]]; then
+  python3 - "$CONFIG_FILE" <<'PY'
+from pathlib import Path
+import sys
+path=Path(sys.argv[1]); lines=path.read_text().splitlines(); out=[]; seen=set()
+for line in lines:
+    if '=' not in line or line.lstrip().startswith('#'):
+        out.append(line); continue
+    key=line.split('=',1)[0].strip(); seen.add(key)
+    if key=='DPM_HOST': out.append("DPM_HOST='127.0.0.1'")
+    elif key=='DPM_PORT': out.append("DPM_PORT='8787'")
+    else: out.append(line)
+if 'DPM_HOST' not in seen: out.append("DPM_HOST='127.0.0.1'")
+if 'DPM_PORT' not in seen: out.append("DPM_PORT='8787'")
+path.write_text('\n'.join(out)+'\n')
+PY
+else
+  echo "Missing $CONFIG_FILE; run ./install.sh instead" >&2
+  exit 1
+fi
+chmod 600 "$CONFIG_FILE"
+
+rm -rf "$APP_DIR"
+install -d -o root -g root -m 755 "$APP_DIR"
+tar -C "$SOURCE_DIR" --exclude='.git' --exclude='venv' --exclude='__pycache__' --exclude='*.pyc' -cf - . | tar -C "$APP_DIR" -xf -
+python3 -m venv "$APP_DIR/venv"
+"$APP_DIR/venv/bin/python" -m pip install --disable-pip-version-check --upgrade pip >/dev/null
+"$APP_DIR/venv/bin/python" -m pip install --disable-pip-version-check -r "$APP_DIR/requirements.txt"
+cat > /usr/local/bin/dpm <<EOF
+#!/usr/bin/env bash
+exec "$APP_DIR/venv/bin/python" -m dpm.cli "\$@"
+EOF
+chmod 755 /usr/local/bin/dpm
+cat > /etc/systemd/system/$NEW_UNIT <<EOF
+[Unit]
+Description=Deploy Project Manager
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+WorkingDirectory=$APP_DIR
+EnvironmentFile=$CONFIG_FILE
+Environment=HOME=$DATA_DIR
+Environment=PYTHONUNBUFFERED=1
+ExecStart=$APP_DIR/venv/bin/python -m dpm.app
+Restart=always
+RestartSec=3
+KillMode=control-group
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl disable "$OLD_UNIT" 2>/dev/null || true
+rm -f /etc/systemd/system/$OLD_UNIT
+systemctl daemon-reload
+bash "$APP_DIR/scripts/configure-proxy.sh"
+if [[ -e /etc/nginx/sites-enabled/tank-game.conf ]]; then
+  rm -f /etc/nginx/sites-enabled/tank-game.conf /etc/nginx/sites-available/tank-game.conf
+  systemctl stop nginx 2>/dev/null || true
+fi
+docker compose -p dpm-infra -f "$APP_DIR/infra/compose.yml" up -d
+systemctl enable --now "$NEW_UNIT"
+rm -rf "$OLD_APP_DIR"
+echo "[dpm] Compose-native update complete"

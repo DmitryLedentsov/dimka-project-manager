@@ -1,38 +1,14 @@
-# Dimka Project Manager
+# DPM — Deploy Project Manager
 
-Dimka Project Manager (DPM) — лёгкая панель управления приложениями на одном Linux-сервере.
+DPM is a small self-hosted control plane for deploying Git repositories as Docker Compose projects.
 
-DPM использует двухуровневую модель:
+DPM does not implement its own process supervisor, component manifest, port allocator, healthcheck engine or static publisher. `compose.yml` is the only runtime source of truth.
 
-```text
-Project
-├── process component
-├── static component
-└── future component types
-```
+## Responsibilities
 
-**Project** — логическая единица деплоя и управления Git-репозиторием. Его можно деплоить, редеплоить, запускать и останавливать целиком.
+DPM owns Git polling, deployment queue/history, Compose commands, project/service controls, deployment logs, container logs, Docker telemetry, web UI and CLI. Docker Compose owns images, containers, isolated networks, volumes, dependencies, healthchecks, runtime environment and ports.
 
-**Component** — конкретная часть проекта на сервере. У каждого типа свой lifecycle, страница, действия, настройки и логи. Добавление нового component handler не требует менять логику проекта.
-
-Сейчас поддерживаются:
-
-- `process` — долгоживущий Linux-процесс;
-- `static` — публикация собранных файлов в целевую директорию.
-
-В будущем registry рассчитан на `cron`, `job`, `container`, `systemd`, `external` и другие типы.
-
-DPM, Git, build-команды и компоненты работают от `root`. Отдельный системный пользователь не создаётся.
-
-## Интерфейсы
-
-- адаптивная web-панель: `/admin`;
-- CLI `dpm`;
-- единый Python daemon и единый HTTP API;
-- SQLite для состояния;
-- HTML, CSS и jQuery без тяжёлого frontend-фреймворка.
-
-## Установка
+## Installation
 
 ```bash
 git clone https://github.com/DmitryLedentsov/dimka-project-manager.git
@@ -40,233 +16,75 @@ cd dimka-project-manager
 sudo ./install.sh
 ```
 
-Обновление:
+The installer uses Docker's official Ubuntu/Debian repository, installs the Compose plugin, installs DPM under `/opt/deploy-project-manager`, creates `deploy-project-manager.service`, starts a shared Traefik proxy on port 80 and exposes DPM under `/admin`.
+
+Default login: `admin / admin`.
+
+Private Git repositories use `/var/lib/dpm/.ssh/id_ed25519`.
+
+Update:
 
 ```bash
 git pull origin master
 sudo ./update.sh
 ```
 
-Конфигурация:
+The Compose-native update intentionally removes the old native service table and stops process groups recorded by previous DPM versions.
+
+## Add a project
+
+A repository needs a standard Compose file. No `dpm.yaml` is used.
 
 ```bash
-sudo ./config.sh
+dpm project add git@github.com:user/project.git --branch master --compose-file compose.yml --env-file /etc/project/compose.env
 ```
 
-Данные:
+Environment-file auto-detection order:
 
 ```text
-/var/lib/dpm
-/var/log/dpm
-/etc/dpm/config.env
+/etc/dpm/projects/<project>.env
+/etc/<project>/compose.env
+<repository>/.env
 ```
-
-SSH-ключ для приватных Git-репозиториев:
-
-```bash
-sudo cat /var/lib/dpm/.ssh/id_ed25519.pub
-```
-
-## `dpm.yaml`
-
-В корне проекта должен находиться простой manifest:
-
-```yaml
-version: 1
-
-project:
-  name: example-app
-
-build:
-  - ./mvnw clean package -DskipTests
-  - npm --prefix frontend ci
-  - npm --prefix frontend run build
-
-components:
-  api:
-    type: process
-    command:
-      - java
-      - -jar
-      - backend/target/app.jar
-    cwd: .
-    env_file: /etc/example-app/runtime.env
-    env:
-      SERVER_PORT: "8080"
-    healthcheck:
-      tcp: 127.0.0.1:8080
-      timeout: 45s
-
-  web:
-    type: static
-    depends_on: [api]
-    source: frontend/dist
-    target: /var/www/example-app
-    url: https://example.com
-    healthcheck:
-      http: https://example.com
-      timeout: 15s
-```
-
-`components` — map, где ключ одновременно является читаемым именем и стабильным ID внутри проекта.
-
-Общие поля:
-
-```yaml
-components:
-  component-name:
-    type: process
-    enabled: true
-    depends_on: []
-```
-
-### Process
-
-```yaml
-worker:
-  type: process
-  command: python worker.py
-  cwd: backend
-  env_file: /etc/app/runtime.env
-  env:
-    WORKERS: "4"
-  healthcheck:
-    command: python healthcheck.py
-    timeout: 30s
-```
-
-Healthcheck поддерживает одну из форм:
-
-```yaml
-healthcheck:
-  tcp: 127.0.0.1:8080
-  timeout: 30s
-```
-
-```yaml
-healthcheck:
-  http: http://127.0.0.1:8080/health
-  timeout: 30s
-```
-
-```yaml
-healthcheck:
-  command: ./healthcheck.sh
-  timeout: 30s
-```
-
-Process actions:
-
-```text
-Start
-Stop
-Restart
-Logs
-```
-
-После аварийного выхода process остаётся `FAILED`. Автоматического рестарта нет.
-
-### Static
-
-```yaml
-web:
-  type: static
-  source: frontend/dist
-  target: /var/www/app
-  url: https://example.com
-  index: index.html
-  healthcheck:
-    http: https://example.com
-    timeout: 15s
-```
-
-Static actions:
-
-```text
-Publish
-Unpublish
-Republish
-Open
-Publication logs
-```
-
-DPM копирует release во временную директорию, атомарно переключает target и восстанавливает предыдущую версию, если HTTP-check новой публикации не прошёл.
 
 ## Project lifecycle
 
-```text
-fetch repository
-→ read dpm.yaml
-→ register missing components
-→ build
-→ stop old components in reverse dependency order
-→ apply component definitions
-→ start components in dependency order
-→ healthchecks
-```
+Deploy performs Git checkout, Compose validation, image pull/build, `up -d --remove-orphans`, then waits for running/healthy services. A failed image build leaves the currently running stack untouched. Named volumes are never removed automatically.
 
-Если build падает, старые работающие компоненты не трогаются.
+DPM rejects managed Compose configurations containing automatic restart policies. A crashed container stays failed until an operator acts or a later deployment recreates it.
 
-У проекта есть:
+## Shared reverse proxy
 
-```text
-desired_state = running | stopped
-actual_state  = running | stopped | deploying | degraded | failed
-```
+DPM installs Traefik and creates the external `dpm-proxy` network. Projects opt into public routing with ordinary Traefik labels. Optional `dpm.role` and `dpm.url` labels improve UI display but do not define runtime behavior.
 
-`Stop project` останавливает все дочерние компоненты. Пока project остановлен, отдельный component нельзя запустить — сначала нужно запустить project.
-
-Deploy остановленного project обновляет checkout и артефакты, но оставляет компоненты остановленными.
-
-Логи разделены:
-
-- project deployment log: Git, build, apply, component ordering;
-- process component log: stdout/stderr;
-- static component log: publication и HTTP-check.
+DPM itself remains a host systemd process on `127.0.0.1:8787`; Traefik routes `/admin` to it.
 
 ## CLI
 
 ```bash
 dpm status
-
 dpm project list
-dpm project add git@github.com:user/project.git --branch master
-dpm project check 1
+dpm project show 1
 dpm project deploy 1
 dpm project redeploy 1
 dpm project start 1
 dpm project stop 1
 dpm project remove 1
-
-dpm component list
-dpm component start 1
-dpm component stop 1
-dpm component restart 1
-dpm component delete 1
-
-dpm logs 1 --lines 300
-dpm logs 1 --follow
+dpm service list 1
+dpm service start 1 api
+dpm service stop 1 api
+dpm service restart 1 api
+dpm logs 1
+dpm logs 1 api --follow
 ```
 
-`dpm service ...` сохранён как compatibility alias для `dpm component ...`.
+## Files
 
-## Совместимость
-
-Manifest первого поколения с `services:` продолжает читаться как набор `process`-компонентов. После следующего успешного деплоя записи автоматически получают новый component schema.
-
-## Разработка
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-python -m unittest discover -s tests -v
-
-DPM_DATA_DIR=/tmp/dpm-data \
-DPM_LOG_DIR=/tmp/dpm-logs \
-DPM_CONFIG_FILE=/tmp/dpm.env \
-DPM_PORT=8787 \
-python -m dpm.app
+```text
+/opt/deploy-project-manager
+/etc/dpm/config.env
+/etc/dpm/traefik-dynamic.yml
+/var/lib/dpm/dpm.sqlite3
+/var/lib/dpm/projects
+/var/log/dpm
 ```
-
-Откройте `http://127.0.0.1:8787/admin`, логин `admin`, пароль `admin`.

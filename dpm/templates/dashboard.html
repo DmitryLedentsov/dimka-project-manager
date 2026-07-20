@@ -1,38 +1,9 @@
 {% extends "base.html" %}
 {% block title %}Projects · DPM{% endblock %}
 {% block content %}
-<section class="infra-page-head">
-  <div>
-    <div class="infra-kicker">INFRASTRUCTURE / PROJECT CONTROL</div>
-    <h1>Projects and components</h1>
-    <p>Projects are deployment units. Components are their concrete runtime and publication targets.</p>
-  </div>
-  <button class="button button-primary js-open-add" type="button">ADD PROJECT <b>＋</b></button>
-</section>
-
-<section class="infra-progress hidden" id="active-alert">
-  <div class="infra-progress-copy"><span>ACTIVE OPERATION</span><strong id="active-alert-title">Deployment in progress</strong><small id="active-alert-copy">Fetching repository state...</small></div>
-  <div class="infra-progress-track"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
-  <b class="infra-live">LIVE</b>
-</section>
-
-<section class="infra-metrics">
-  <article class="infra-metric metric-projects"><header><span>01</span><b>PROJECTS</b></header><strong id="metric-projects">—</strong><p>Deployment units</p><footer><span>GIT TARGETS</span><i></i></footer></article>
-  <article class="infra-metric"><header><span>02</span><b>COMPONENTS</b></header><strong id="metric-components">—</strong><p>Process and static children</p><footer><span>REGISTRY</span><i></i></footer></article>
-  <article class="infra-metric metric-running"><header><span>03</span><b>READY</b></header><strong id="metric-ready">—</strong><p>Healthy component states</p><footer><span>ACTIVE</span><i></i></footer></article>
-  <article class="infra-metric metric-failed"><header><span>04</span><b>ATTENTION</b></header><strong id="metric-attention">—</strong><p>Failed or degraded projects</p><footer><span>ALERTS</span><i></i></footer></article>
-</section>
-
-<section class="panel infra-panel project-tree-panel">
-  <header class="panel-header infra-panel-header">
-    <div><div class="eyebrow">PROJECT TREE / DESIRED + ACTUAL STATE</div><h2>Managed infrastructure</h2></div>
-    <div class="panel-tools"><span class="sync-label"><i></i> AUTO REFRESH</span><button class="icon-button" id="refresh-dashboard" title="Обновить">↻</button></div>
-  </header>
-  <div class="project-tree-head">
-    <span>PROJECT / COMPONENT</span><span>STATE</span><span>VERSION / TARGET</span><span>RUNTIME</span><span>CONTROL</span>
-  </div>
-  <div id="project-tree" class="project-tree"></div>
-  <div class="empty-state hidden infra-empty" id="empty-projects"><div class="empty-code">00</div><h3>NO PROJECTS REGISTERED</h3><p>Connect a Git repository containing a valid <code>dpm.yaml</code> manifest.</p><button class="button button-primary js-open-add" type="button">REGISTER FIRST PROJECT</button></div>
-</section>
+<section class="page-head"><div><div class="eyebrow">GIT / DOCKER COMPOSE</div><h1>Projects</h1><p>Each project is one Compose stack. Its child rows are services discovered directly from <code>compose.yml</code>.</p></div><button class="button primary js-open-add" type="button">ADD PROJECT ＋</button></section>
+<section class="operation hidden" id="active-operation"><div><span>ACTIVE DEPLOYMENT</span><strong id="operation-title">Working</strong><small id="operation-stage">Fetching repository</small></div><div class="scanner"></div><b>LIVE</b></section>
+<section class="metrics"><article><span>PROJECTS</span><strong id="metric-projects">—</strong><small>Compose stacks</small></article><article><span>SERVICES</span><strong id="metric-services">—</strong><small>Declared containers</small></article><article><span>READY</span><strong id="metric-ready">—</strong><small>Running / healthy</small></article><article class="metric-alert"><span>ATTENTION</span><strong id="metric-attention">—</strong><small>Failed / degraded</small></article></section>
+<section class="panel tree-panel"><header><div><div class="eyebrow">PROJECT TREE / LIVE DOCKER STATE</div><h2>Managed stacks</h2></div><button class="icon-button" id="refresh-dashboard" type="button">↻</button></header><div class="tree-columns"><span>PROJECT / SERVICE</span><span>STATE</span><span>IMAGE / COMMIT</span><span>RUNTIME</span><span>CONTROL</span></div><div id="project-tree"></div><div class="empty hidden" id="empty-projects"><strong>NO PROJECTS</strong><p>Add a Git repository containing <code>compose.yml</code>.</p><button class="button primary js-open-add" type="button">ADD FIRST PROJECT</button></div></section>
 {% endblock %}
 {% block scripts %}<script src="{{ base_path }}/static/js/dashboard.js"></script>{% endblock %}

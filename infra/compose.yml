@@ -1,0 +1,26 @@
+services:
+  proxy:
+    image: traefik:v3.6
+    container_name: dpm-proxy
+    command:
+      - --entrypoints.web.address=:80
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --providers.docker.network=dpm-proxy
+      - --providers.file.filename=/etc/traefik/dynamic.yml
+      - --api.dashboard=false
+      - --log.level=INFO
+    ports:
+      - "80:80"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /etc/dpm/traefik-dynamic.yml:/etc/traefik/dynamic.yml:ro
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    restart: unless-stopped
+    networks:
+      - proxy
+
+networks:
+  proxy:
+    name: dpm-proxy

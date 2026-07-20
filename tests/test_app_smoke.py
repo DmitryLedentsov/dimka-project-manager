@@ -8,47 +8,26 @@ from dpm.app import create_app
 from dpm.config import Settings
 
 
-class DpmApplicationSmokeTest(unittest.TestCase):
-    def test_application_starts_and_migrates_component_schema(self) -> None:
+class AppSmokeTest(unittest.TestCase):
+    def test_login_and_schema(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            settings = Settings(
-                data_dir=root / "data",
-                log_dir=root / "logs",
-                config_file=root / "dpm.env",
-                host="127.0.0.1",
-                port=18787,
-                base_path="/admin",
-                public_url="http://127.0.0.1:18787/admin",
-                secret_key="test-secret-key",
-                cli_token="test-cli-token",
-                admin_username="admin",
-                admin_password_hash=None,
-                admin_is_default=True,
-                poll_interval=60,
-                debug=False,
-            )
+            settings = Settings(root / "data", root / "logs", root / "config.env", "127.0.0.1", 18787, "/admin", "http://127.0.0.1/admin", "secret", "token", "admin", None, True, 60, 60, False)
             app = create_app(settings, start_background=False)
             app.testing = True
             client = app.test_client()
-
-            response = client.get("/admin/login")
-            self.assertEqual(response.status_code, 200)
-            self.assertIn(b"DPM", response.data)
-
+            self.assertEqual(client.get("/admin/login").status_code, 200)
+            self.assertEqual(client.get("/admin/api/health").status_code, 200)
             context = app.extensions["dpm"]
-            project_columns = {
-                row[1]
-                for row in context.db.connect().execute("PRAGMA table_info(projects)")
-            }
-            component_columns = {
-                row[1]
-                for row in context.db.connect().execute("PRAGMA table_info(services)")
-            }
-            self.assertIn("desired_state", project_columns)
-            self.assertIn("component_type", component_columns)
-            self.assertIn("config_json", component_columns)
-            self.assertIn("runtime_json", component_columns)
+            connection = context.db.connect()
+            try:
+                columns = {row[1] for row in connection.execute("PRAGMA table_info(projects)")}
+                tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            finally:
+                connection.close()
+            self.assertIn("compose_file", columns)
+            self.assertIn("compose_project_name", columns)
+            self.assertNotIn("services", tables)
             context.shutdown()
 
 

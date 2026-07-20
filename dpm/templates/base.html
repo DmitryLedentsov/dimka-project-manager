@@ -3,48 +3,57 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#050706">
+  <meta name="theme-color" content="#070907">
   <meta name="csrf-token" content="{{ csrf_token }}">
   <meta name="dpm-base-path" content="{{ base_path }}">
   <title>{% block title %}DPM{% endblock %}</title>
-  <link rel="stylesheet" href="{{ base_path }}/static/css/app-base.css">
-  <link rel="stylesheet" href="{{ base_path }}/static/css/app-components.css">
-  <link rel="stylesheet" href="{{ base_path }}/static/css/app-pages.css">
-  <link rel="stylesheet" href="{{ base_path }}/static/css/infra.css">
-  <link rel="stylesheet" href="{{ base_path }}/static/css/deployment-log.css">
-  <link rel="stylesheet" href="{{ base_path }}/static/css/project-tree.css">
-  <link rel="stylesheet" href="{{ base_path }}/static/css/component-pages.css">
+  <link rel="stylesheet" href="{{ base_path }}/static/css/compose-ui.css">
 </head>
 <body class="{% block body_class %}{% endblock %}">
-  <div class="infra-grid" aria-hidden="true"></div>
-  {% if current_user %}
-  <div class="app-shell infra-shell">
-    <aside class="sidebar infra-sidebar" id="sidebar">
-      <div class="sidebar-head">
-        <a class="brand infra-brand" href="{{ base_path }}/"><span class="infra-brand-mark"><b>D</b><i></i></span><span><strong>DPM</strong><small>INFRA CONTROL</small></span></a>
-        <span class="node-led" title="Control daemon online"></span>
-      </div>
-      <div class="sidebar-section-label">CONTROL</div>
-      <nav class="nav-stack infra-nav">
-        <a class="nav-item {% if active_page == 'overview' %}active{% endif %}" href="{{ base_path }}/"><span class="nav-icon infra-icon-dashboard"></span><span>Projects</span><kbd>01</kbd></a>
-        <button class="nav-item js-open-add" type="button"><span class="nav-icon infra-icon-deploy"></span><span>New project</span><kbd>02</kbd></button>
-      </nav>
-      <div class="sidebar-section-label">NODE</div>
-      <div class="node-card"><div class="node-card-line"><span>DAEMON</span><b class="ok">ONLINE</b></div><div class="node-card-line"><span>GIT POLL</span><b>ACTIVE</b></div><div class="node-card-line"><span>VERSION</span><b>v{{ dpm_version }}</b></div><div class="node-bars" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div>
-      <div class="sidebar-footer infra-sidebar-footer"><button class="user-chip js-open-password" type="button"><span class="avatar">{{ current_user.username[:2] | upper }}</span><span><strong>{{ current_user.username }}</strong><small>ROOT OPERATOR</small></span></button><form action="{{ base_path }}/logout" method="post"><button class="infra-logout" title="Выйти" type="submit">EXIT</button></form></div>
-    </aside>
-    <div class="main-column infra-main">
-      <header class="topbar infra-topbar"><button class="mobile-menu" id="mobile-menu" aria-label="Меню"><span></span><span></span></button><div class="topbar-path"><span>DPM</span><i>/</i><b>PROJECT TREE</b></div><div class="command-search infra-search"><span>⌕</span><input type="search" id="global-filter" placeholder="SEARCH PROJECT / COMPONENT / REPOSITORY" autocomplete="off"><kbd>/</kbd></div><div class="topbar-meta infra-topbar-meta"><span class="pulse-dot"></span><span class="desktop-only">NODE ONLINE</span><span class="clock" id="live-clock">--:--</span></div></header>
-      <main class="content infra-content">{% if default_credentials %}<div class="security-banner infra-warning" id="default-credentials-banner"><div><strong>SECURITY NOTICE</strong><span>Default credentials admin/admin are active.</span></div><button class="button button-small js-open-password" type="button">CHANGE ACCESS</button></div>{% endif %}{% block content %}{% endblock %}</main>
-    </div>
+{% if current_user %}
+<div class="shell">
+  <aside class="sidebar" id="sidebar">
+    <a class="brand" href="{{ base_path }}/"><span class="brand-mark">D</span><span><strong>DPM</strong><small>DEPLOY PROJECT MANAGER</small></span></a>
+    <div class="nav-label">CONTROL PLANE</div>
+    <nav>
+      <a class="nav-item {% if active_page == 'projects' %}active{% endif %}" href="{{ base_path }}/"><span>▦</span>Projects</a>
+      <button class="nav-item js-open-add" type="button"><span>＋</span>Add project</button>
+    </nav>
+    <div class="runtime-card"><span>RUNTIME</span><strong>DOCKER COMPOSE</strong><small>Git → images → containers</small><i></i></div>
+    <footer>
+      <button class="operator js-open-password" type="button"><b>{{ current_user.username[:2] | upper }}</b><span>{{ current_user.username }}<small>ROOT OPERATOR</small></span></button>
+      <form action="{{ base_path }}/logout" method="post"><button class="exit" type="submit">EXIT</button></form>
+    </footer>
+  </aside>
+  <div class="main">
+    <header class="topbar">
+      <button class="menu" id="mobile-menu" type="button">☰</button>
+      <div class="crumb"><span>DPM</span><i>/</i><b>COMPOSE PROJECTS</b></div>
+      <div class="search"><span>⌕</span><input id="global-filter" type="search" placeholder="SEARCH PROJECT / SERVICE / IMAGE"><kbd>/</kbd></div>
+      <div class="node"><i></i><span>DOCKER NODE</span><b id="live-clock">--:--</b></div>
+    </header>
+    <main class="content">
+      {% if default_credentials %}<div class="warning" id="default-credentials-banner"><div><strong>DEFAULT ACCESS ACTIVE</strong><span>Change admin/admin before exposing this panel.</span></div><button class="button small js-open-password" type="button">CHANGE PASSWORD</button></div>{% endif %}
+      {% block content %}{% endblock %}
+    </main>
   </div>
-  <div class="modal-backdrop" id="add-project-modal" aria-hidden="true"><section class="modal-card infra-modal" role="dialog" aria-modal="true" aria-labelledby="add-project-title"><button class="modal-close" data-close-modal type="button">×</button><div class="eyebrow">PROJECT / REGISTER REPOSITORY</div><h2 id="add-project-title">Connect Git project</h2><p class="modal-copy">DPM will clone the repository, parse <code>dpm.yaml</code>, build it and create the declared component tree.</p><form id="add-project-form" class="form-stack"><label><span>REPOSITORY URL</span><input name="repository_url" type="text" required placeholder="git@github.com:user/project.git" autocomplete="off"></label><div class="form-grid"><label><span>BRANCH</span><input name="branch" type="text" value="master" required></label><label><span>PROJECT NAME <em>OPTIONAL</em></span><input name="name" type="text" placeholder="derived from repository"></label></div><div class="form-grid"><label><span>POLL INTERVAL</span><div class="input-suffix"><input name="poll_interval" type="number" min="15" value="60"><b>SEC</b></div></label><label class="toggle-label"><span>AUTOMATIC DEPLOY</span><input name="auto_update" type="checkbox" checked><i></i></label></div><div class="form-hint"><span>KEY</span> Private repositories use the root SSH identity stored in <code>/var/lib/dpm/.ssh</code>.</div><button class="button button-primary button-full" type="submit">REGISTER & DEPLOY <b>→</b></button></form></section></div>
-  <div class="modal-backdrop" id="password-modal" aria-hidden="true"><section class="modal-card modal-small infra-modal" role="dialog" aria-modal="true"><button class="modal-close" data-close-modal type="button">×</button><div class="eyebrow">SECURITY / CREDENTIALS</div><h2>Change operator password</h2><form id="password-form" class="form-stack"><label><span>CURRENT PASSWORD</span><input name="current_password" type="password" required></label><label><span>NEW PASSWORD</span><input name="new_password" type="password" minlength="8" required></label><label><span>REPEAT PASSWORD</span><input name="repeat_password" type="password" minlength="8" required></label><button class="button button-primary button-full" type="submit">UPDATE CREDENTIALS</button></form></section></div>
-  <div class="modal-backdrop" id="deployment-log-modal" aria-hidden="true"><section class="modal-card infra-modal deployment-log-card" role="dialog" aria-modal="true" aria-labelledby="deployment-log-title"><button class="modal-close" data-close-modal type="button">×</button><header class="deployment-log-head"><div><div class="eyebrow">PROJECT DEPLOYMENT / STDOUT + STDERR</div><h2 id="deployment-log-title">Deployment log</h2><p id="deployment-log-meta">Loading...</p></div><button class="button button-small" id="deployment-log-refresh" type="button">REFRESH</button></header><div class="infra-terminal-head deployment-terminal-head"><b>DEPLOY</b><code>latest project deployment</code><span>LIVE BUFFER</span></div><pre class="infra-log-console deployment-log-console" id="deployment-log-console">Waiting for deployment log...</pre></section></div>
-  {% endif %}
-  {% if not current_user %}{% block public_content %}{% endblock %}{% endif %}
-  <div class="toast-stack" id="toast-stack"></div>
-  <script src="https://code.jquery.com/jquery-3.7.1.min.js" integrity="sha256-/JqT3SQfawRcv/BIHPThkBvs0OEvtFFmqPF/lYI/Cxo=" crossorigin="anonymous"></script>
-  <script src="{{ base_path }}/static/js/common.js"></script>{% block scripts %}{% endblock %}
+</div>
+
+<div class="modal" id="add-project-modal" aria-hidden="true"><section class="modal-card"><button class="modal-close" data-close-modal type="button">×</button><div class="eyebrow">REGISTER / GIT + COMPOSE</div><h2>Add Compose project</h2><p>DPM clones the repository and uses its standard Compose file as the only runtime definition.</p><form id="add-project-form" class="form-stack">
+<label><span>REPOSITORY URL</span><input name="repository_url" required placeholder="git@github.com:user/project.git"></label>
+<div class="form-grid"><label><span>BRANCH</span><input name="branch" value="master" required></label><label><span>PROJECT NAME <em>OPTIONAL</em></span><input name="name" placeholder="derived from repository"></label></div>
+<div class="form-grid"><label><span>COMPOSE FILE</span><input name="compose_file" value="compose.yml" required></label><label><span>ENV FILE <em>OPTIONAL</em></span><input name="env_file" placeholder="/etc/project/compose.env"></label></div>
+<div class="form-grid"><label><span>COMPOSE PROJECT NAME <em>OPTIONAL</em></span><input name="compose_project_name" placeholder="same as project"></label><label><span>POLL INTERVAL</span><div class="input-suffix"><input name="poll_interval" type="number" min="15" value="60"><b>SEC</b></div></label></div>
+<label class="toggle-row"><span><strong>AUTOMATIC DEPLOY</strong><small>Deploy when a new branch commit appears</small></span><input name="auto_update" type="checkbox" checked><i></i></label>
+<button class="button primary full" type="submit">REGISTER & DEPLOY →</button></form></section></div>
+
+<div class="modal" id="password-modal" aria-hidden="true"><section class="modal-card compact"><button class="modal-close" data-close-modal type="button">×</button><div class="eyebrow">SECURITY / OPERATOR</div><h2>Change password</h2><form id="password-form" class="form-stack"><label><span>CURRENT PASSWORD</span><input name="current_password" type="password" required></label><label><span>NEW PASSWORD</span><input name="new_password" type="password" minlength="8" required></label><label><span>REPEAT PASSWORD</span><input name="repeat_password" type="password" minlength="8" required></label><button class="button primary full" type="submit">UPDATE PASSWORD</button></form></section></div>
+{% endif %}
+
+{% if not current_user %}{% block public_content %}{% endblock %}{% endif %}
+<div class="toasts" id="toast-stack"></div>
+<script src="https://code.jquery.com/jquery-3.7.1.min.js" integrity="sha256-/JqT3SQfawRcv/BIHPThkBvs0OEvtFFmqPF/lYI/Cxo=" crossorigin="anonymous"></script>
+<script src="{{ base_path }}/static/js/common.js"></script>
+{% block scripts %}{% endblock %}
 </body>
 </html>

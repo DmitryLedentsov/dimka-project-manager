@@ -15,11 +15,10 @@ def _load_env_file(path: Path) -> None:
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, value = line.split("=", 1)
-        key = key.strip()
         value = value.strip()
         if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
             value = value[1:-1]
-        os.environ.setdefault(key, value)
+        os.environ.setdefault(key.strip(), value)
 
 
 @dataclass(frozen=True)
@@ -37,6 +36,7 @@ class Settings:
     admin_password_hash: str | None
     admin_is_default: bool
     poll_interval: int
+    compose_timeout: int
     debug: bool
 
     @property
@@ -55,22 +55,19 @@ class Settings:
 def load_settings() -> Settings:
     config_file = Path(os.environ.get("DPM_CONFIG_FILE", "/etc/dpm/config.env"))
     _load_env_file(config_file)
-
     base_path = os.environ.get("DPM_BASE_PATH", "/admin").strip() or "/admin"
     if not base_path.startswith("/"):
         base_path = "/" + base_path
     base_path = base_path.rstrip("/") or "/admin"
-
     port = int(os.environ.get("DPM_PORT", "8787"))
     public_url = os.environ.get(
         "DPM_PUBLIC_URL", f"http://127.0.0.1:{port}{base_path}"
     ).rstrip("/")
-
     return Settings(
         data_dir=Path(os.environ.get("DPM_DATA_DIR", "/var/lib/dpm")),
         log_dir=Path(os.environ.get("DPM_LOG_DIR", "/var/log/dpm")),
         config_file=config_file,
-        host=os.environ.get("DPM_HOST", "0.0.0.0"),
+        host=os.environ.get("DPM_HOST", "127.0.0.1"),
         port=port,
         base_path=base_path,
         public_url=public_url,
@@ -80,5 +77,6 @@ def load_settings() -> Settings:
         admin_password_hash=os.environ.get("DPM_ADMIN_PASSWORD_HASH"),
         admin_is_default=os.environ.get("DPM_ADMIN_IS_DEFAULT", "0") == "1",
         poll_interval=max(15, int(os.environ.get("DPM_POLL_INTERVAL", "60"))),
+        compose_timeout=max(30, int(os.environ.get("DPM_COMPOSE_TIMEOUT", "240"))),
         debug=os.environ.get("DPM_DEBUG", "0") == "1",
     )
