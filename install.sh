@@ -88,11 +88,12 @@ rm -f /etc/systemd/system/dimka-project-manager.service
 systemctl daemon-reload
 
 bash "$APP_DIR/scripts/configure-proxy.sh"
+# Bring the local control plane up before pulling the public proxy image.
+systemctl enable --now "$UNIT"
 # Compose-native DPM uses Traefik as the only owner of public ports 80/443.
 systemctl disable --now nginx 2>/dev/null || true
 rm -f /etc/nginx/sites-enabled/tank-game.conf /etc/nginx/sites-available/tank-game.conf
-docker compose -p dpm-infra -f "$APP_DIR/infra/compose.yml" up -d
-systemctl enable --now "$UNIT"
+bash "$APP_DIR/scripts/start-proxy.sh"
 
 # shellcheck disable=SC1090
 source "$CONFIG_FILE"
