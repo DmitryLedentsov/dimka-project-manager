@@ -8,6 +8,6 @@ EDITOR_COMMAND="${EDITOR:-nano}"
 "$EDITOR_COMMAND" "$CONFIG_FILE"
 chmod 600 "$CONFIG_FILE"
 bash "$APP_DIR/scripts/configure-proxy.sh"
-docker compose -p dpm-infra -f "$APP_DIR/infra/compose.yml" up -d
 systemctl restart deploy-project-manager.service
+bash "$APP_DIR/scripts/start-proxy.sh"
 echo "[dpm] Configuration updated"
