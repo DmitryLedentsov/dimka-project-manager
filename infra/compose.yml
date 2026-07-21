@@ -15,14 +15,3 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - /etc/dpm/traefik-dynamic.yml:/etc/traefik/dynamic.yml:ro
     restart: unless-stopped
-
-  network-anchor:
-    image: alpine:3.20
-    command: ["sleep", "infinity"]
-    restart: unless-stopped
-    networks:
-      - proxy
-
-networks:
-  proxy:
-    name: dpm-proxy
