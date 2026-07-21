@@ -99,10 +99,12 @@ systemctl disable "$OLD_UNIT" 2>/dev/null || true
 rm -f /etc/systemd/system/$OLD_UNIT
 systemctl daemon-reload
 bash "$APP_DIR/scripts/configure-proxy.sh"
+# DPM itself comes back before any external registry access, so a temporary
+# Docker Hub throttle cannot leave the control plane stopped.
+systemctl enable --now "$NEW_UNIT"
 # Traefik is the only public reverse proxy in the Compose-native architecture.
 systemctl disable --now nginx 2>/dev/null || true
 rm -f /etc/nginx/sites-enabled/tank-game.conf /etc/nginx/sites-available/tank-game.conf
-docker compose -p dpm-infra -f "$APP_DIR/infra/compose.yml" up -d
-systemctl enable --now "$NEW_UNIT"
+bash "$APP_DIR/scripts/start-proxy.sh"
 rm -rf "$OLD_APP_DIR"
 echo "[dpm] Compose-native update complete"
