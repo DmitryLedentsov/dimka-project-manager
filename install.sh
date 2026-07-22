@@ -61,6 +61,7 @@ python3 -m venv "$APP_DIR/venv"
 "$APP_DIR/venv/bin/python" -m pip install --disable-pip-version-check -r "$APP_DIR/requirements.txt"
 cat > /usr/local/bin/dpm <<EOF
 #!/usr/bin/env bash
+cd "$APP_DIR"
 exec "$APP_DIR/venv/bin/python" -m dpm.cli "\$@"
 EOF
 chmod 755 /usr/local/bin/dpm
