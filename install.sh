@@ -16,6 +16,7 @@ apt-get update
 apt-get install -y \
   python3 python3-venv python3-pip git openssh-client \
   curl ca-certificates tar
+bash "$SOURCE_DIR/scripts/configure-docker-mirror.sh"
 
 install -d -o root -g root -m 700 "$CONFIG_DIR" "$DATA_DIR" "$DATA_DIR/projects" "$DATA_DIR/.ssh" "$LOG_DIR"
 if [[ ! -f "$DATA_DIR/.ssh/id_ed25519" ]]; then
