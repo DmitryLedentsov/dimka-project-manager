@@ -37,7 +37,9 @@ fi
 
 bash "$SOURCE_DIR/scripts/install-docker.sh"
 apt-get update
-apt-get install -y python3 python3-venv python3-pip git openssh-client
+apt-get install -y \
+  python3 python3-venv python3-pip git openssh-client \
+  curl ca-certificates tar
 install -d -o root -g root -m 700 /etc/dpm "$DATA_DIR" "$DATA_DIR/projects" "$DATA_DIR/.ssh" "${DPM_LOG_DIR:-/var/log/dpm}"
 
 if [[ -f "$CONFIG_FILE" ]]; then
@@ -99,8 +101,8 @@ systemctl disable "$OLD_UNIT" 2>/dev/null || true
 rm -f /etc/systemd/system/$OLD_UNIT
 systemctl daemon-reload
 bash "$APP_DIR/scripts/configure-proxy.sh"
-# DPM itself comes back before any external registry access, so a temporary
-# Docker Hub throttle cannot leave the control plane stopped.
+# DPM itself comes back before downloading the proxy release, so a temporary
+# GitHub outage cannot leave the local control plane stopped.
 systemctl enable --now "$NEW_UNIT"
 # Traefik is the only public reverse proxy in the Compose-native architecture.
 systemctl disable --now nginx 2>/dev/null || true
