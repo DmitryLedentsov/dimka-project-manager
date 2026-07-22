@@ -13,7 +13,9 @@ log(){ echo "[dpm] $*"; }
 log "Installing Docker Engine and Compose plugin"
 bash "$SOURCE_DIR/scripts/install-docker.sh"
 apt-get update
-apt-get install -y python3 python3-venv python3-pip git openssh-client
+apt-get install -y \
+  python3 python3-venv python3-pip git openssh-client \
+  curl ca-certificates tar
 
 install -d -o root -g root -m 700 "$CONFIG_DIR" "$DATA_DIR" "$DATA_DIR/projects" "$DATA_DIR/.ssh" "$LOG_DIR"
 if [[ ! -f "$DATA_DIR/.ssh/id_ed25519" ]]; then
@@ -88,7 +90,7 @@ rm -f /etc/systemd/system/dimka-project-manager.service
 systemctl daemon-reload
 
 bash "$APP_DIR/scripts/configure-proxy.sh"
-# Bring the local control plane up before pulling the public proxy image.
+# Bring the local control plane up before downloading the public proxy release.
 systemctl enable --now "$UNIT"
 # Compose-native DPM uses Traefik as the only owner of public ports 80/443.
 systemctl disable --now nginx 2>/dev/null || true
