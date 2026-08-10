@@ -10,6 +10,7 @@ from typing import Any
 from .compose import ComposeError, ComposeRuntime
 from .config import Settings
 from .db import Database
+from .environment import EnvironmentError, ProjectEnvironment
 from .gitops import GitError, GitRepository
 from .utils import repository_name, slugify, tail_file, utc_now
 
@@ -30,6 +31,7 @@ class ProjectManager:
         self.db = db
         self.git = git
         self.compose = compose
+        self.environment = ProjectEnvironment()
         self._executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="dpm-deploy")
         self._locks: dict[int, threading.Lock] = {}
         self._futures: dict[int, Future[Any]] = {}
@@ -65,6 +67,7 @@ class ProjectManager:
         compose_project_name: str | None = None,
         auto_update: bool = True,
         poll_interval: int | None = None,
+        environment: str | None = None,
     ) -> dict[str, Any]:
         repository_url = repository_url.strip()
         if not repository_url or "\n" in repository_url:
@@ -77,6 +80,8 @@ class ProjectManager:
         compose_file = compose_file.strip() or "compose.yml"
         project_root = self.settings.projects_dir / project_name
         repo_path = project_root / "repository"
+        managed_env = str(self.environment.path(project_name)) if environment is not None else None
+        stored_env_file = managed_env or (env_file.strip() if env_file else None)
         now = utc_now()
         try:
             project_id = self.db.execute(
@@ -94,7 +99,7 @@ class ProjectManager:
                     str(repo_path),
                     compose_file,
                     compose_name,
-                    env_file.strip() if env_file else None,
+                    stored_env_file,
                     1 if auto_update else 0,
                     max(15, poll_interval or self.settings.poll_interval),
                     now,
@@ -106,6 +111,13 @@ class ProjectManager:
                 raise ProjectError(f"Project '{project_name}' already exists") from exc
             raise
         (project_root / "logs").mkdir(parents=True, exist_ok=True)
+        try:
+            if environment is not None:
+                self.environment.write(project_name, environment)
+        except (EnvironmentError, OSError) as exc:
+            self.db.execute("DELETE FROM projects WHERE id = ?", [project_id])
+            shutil.rmtree(project_root, ignore_errors=True)
+            raise ProjectError(str(exc)) from exc
         project = self.get_project(project_id)
         self.schedule_deploy(project_id, force=True, reason="initial install")
         return project
@@ -121,6 +133,28 @@ class ProjectManager:
 
     def list_projects(self) -> list[dict[str, Any]]:
         return [self.enrich_project(item) for item in self.db.fetchall("SELECT * FROM projects ORDER BY name")]
+
+    def project_environment(self, project_id: int) -> dict[str, object]:
+        project = self.raw_project(project_id)
+        try:
+            return self.environment.read(str(project["name"]))
+        except (EnvironmentError, OSError, UnicodeError) as exc:
+            raise ProjectError(str(exc)) from exc
+
+    def save_project_environment(self, project_id: int, content: str) -> dict[str, object]:
+        project = self.raw_project(project_id)
+        if self.is_busy(project_id):
+            raise ProjectError("Project is deploying; wait for it to finish before editing the environment")
+        try:
+            result = self.environment.write(str(project["name"]), content)
+        except (EnvironmentError, OSError, UnicodeError) as exc:
+            raise ProjectError(str(exc)) from exc
+        self.db.update(
+            "projects",
+            project_id,
+            {"env_file": str(result["path"]), "updated_at": utc_now()},
+        )
+        return result
 
     def enrich_project(self, project: dict[str, Any]) -> dict[str, Any]:
         item = dict(project)
@@ -402,6 +436,10 @@ class ProjectManager:
         project = self.raw_project(project_id)
         self.compose.remove_project(project)
         self.db.execute("DELETE FROM projects WHERE id = ?", [project_id])
+        try:
+            self.environment.delete(str(project["name"]))
+        except (EnvironmentError, OSError):
+            pass
         if purge:
             shutil.rmtree(Path(project["repo_path"]).parent, ignore_errors=True)
 
