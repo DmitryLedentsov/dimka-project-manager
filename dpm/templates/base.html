@@ -39,13 +39,35 @@
   </div>
 </div>
 
-<div class="modal" id="add-project-modal" aria-hidden="true"><section class="modal-card"><button class="modal-close" data-close-modal type="button">×</button><div class="eyebrow">REGISTER / GIT + COMPOSE</div><h2>Add Compose project</h2><p>DPM clones the repository and uses its standard Compose file as the only runtime definition.</p><form id="add-project-form" class="form-stack">
-<label><span>REPOSITORY URL</span><input name="repository_url" required placeholder="git@github.com:user/project.git"></label>
-<div class="form-grid"><label><span>BRANCH</span><input name="branch" value="master" required></label><label><span>PROJECT NAME <em>OPTIONAL</em></span><input name="name" placeholder="derived from repository"></label></div>
-<div class="form-grid"><label><span>COMPOSE FILE</span><input name="compose_file" value="compose.yml" required></label><label><span>ENV FILE <em>OPTIONAL</em></span><input name="env_file" placeholder="/etc/project/compose.env"></label></div>
-<div class="form-grid"><label><span>COMPOSE PROJECT NAME <em>OPTIONAL</em></span><input name="compose_project_name" placeholder="same as project"></label><label><span>POLL INTERVAL</span><div class="input-suffix"><input name="poll_interval" type="number" min="15" value="60"><b>SEC</b></div></label></div>
-<label class="toggle-row"><span><strong>AUTOMATIC DEPLOY</strong><small>Deploy when a new branch commit appears</small></span><input name="auto_update" type="checkbox" checked><i></i></label>
-<button class="button primary full" type="submit">REGISTER & DEPLOY →</button></form></section></div>
+<div class="modal" id="add-project-modal" aria-hidden="true">
+  <section class="modal-card">
+    <button class="modal-close" data-close-modal type="button">×</button>
+    <div class="eyebrow">REGISTER / GIT + COMPOSE</div>
+    <h2>Add Compose project</h2>
+    <p>DPM clones the repository, writes the project environment, then deploys the standard Compose stack.</p>
+    <form id="add-project-form" class="form-stack">
+      <label><span>REPOSITORY URL</span><input name="repository_url" required placeholder="git@github.com:user/project.git"></label>
+      <div class="form-grid">
+        <label><span>BRANCH</span><input name="branch" value="master" required></label>
+        <label><span>PROJECT NAME <em>OPTIONAL</em></span><input name="name" placeholder="derived from repository"></label>
+      </div>
+      <div class="form-grid">
+        <label><span>COMPOSE FILE</span><input name="compose_file" value="compose.yml" required></label>
+        <label><span>COMPOSE PROJECT NAME <em>OPTIONAL</em></span><input name="compose_project_name" placeholder="same as project"></label>
+      </div>
+      <label>
+        <span>ENVIRONMENT <em>OPTIONAL</em></span>
+        <textarea name="environment" rows="10" spellcheck="false" placeholder="POSTGRES_PASSWORD=...&#10;SECURITY_JWT_SECRET=..." style="width:100%;min-height:180px;resize:vertical;padding:10px;border:1px solid var(--line);outline:none;background:#070a08;color:var(--text);font:10px/1.55 var(--mono)"></textarea>
+        <small style="color:var(--muted);font:8px var(--mono)">Saved as /etc/&lt;project&gt;/compose.env before the first deploy.</small>
+      </label>
+      <div class="form-grid">
+        <label><span>POLL INTERVAL</span><div class="input-suffix"><input name="poll_interval" type="number" min="15" value="60"><b>SEC</b></div></label>
+        <label class="toggle-row"><span><strong>AUTOMATIC DEPLOY</strong><small>Deploy when a new branch commit appears</small></span><input name="auto_update" type="checkbox" checked><i></i></label>
+      </div>
+      <button class="button primary full" type="submit">REGISTER & DEPLOY →</button>
+    </form>
+  </section>
+</div>
 
 <div class="modal" id="password-modal" aria-hidden="true"><section class="modal-card compact"><button class="modal-close" data-close-modal type="button">×</button><div class="eyebrow">SECURITY / OPERATOR</div><h2>Change password</h2><form id="password-form" class="form-stack"><label><span>CURRENT PASSWORD</span><input name="current_password" type="password" required></label><label><span>NEW PASSWORD</span><input name="new_password" type="password" minlength="8" required></label><label><span>REPEAT PASSWORD</span><input name="repeat_password" type="password" minlength="8" required></label><button class="button primary full" type="submit">UPDATE PASSWORD</button></form></section></div>
 {% endif %}
