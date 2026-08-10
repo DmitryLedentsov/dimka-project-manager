@@ -6,7 +6,7 @@ DPM does not implement its own process supervisor, component manifest, port allo
 
 ## Responsibilities
 
-DPM owns Git polling, deployment queue/history, Compose commands, project/service controls, deployment logs, container logs, Docker telemetry, web UI and CLI. Docker Compose owns images, containers, isolated networks, volumes, dependencies, healthchecks, runtime environment and ports.
+DPM owns Git polling, deployment queue/history, Compose commands, project/service controls, project environment files, deployment logs, container logs, Docker telemetry, web UI and CLI. Docker Compose owns images, containers, isolated networks, volumes, dependencies, healthchecks, runtime environment and ports.
 
 ## Installation
 
@@ -34,6 +34,12 @@ The Compose-native update intentionally removes the old native service table and
 ## Add a project
 
 A repository needs a standard Compose file. No `dpm.yaml` is used.
+
+The web UI can accept the project's environment together with the repository settings. DPM writes it to `/etc/<project>/compose.env` with mode `0600` before the initial deploy starts, so Compose files may safely reference the same canonical path from service `env_file` entries.
+
+The environment can later be edited from the project page with **Save** or **Save & redeploy**. It is stored only on the server, outside Git and outside the DPM database.
+
+CLI registration still supports an explicit environment file:
 
 ```bash
 dpm project add git@github.com:user/project.git --branch master --compose-file compose.yml --env-file /etc/project/compose.env
@@ -84,6 +90,7 @@ dpm logs 1 api --follow
 /opt/deploy-project-manager
 /etc/dpm/config.env
 /etc/dpm/traefik-dynamic.yml
+/etc/<project>/compose.env
 /var/lib/dpm/dpm.sqlite3
 /var/lib/dpm/projects
 /var/log/dpm
