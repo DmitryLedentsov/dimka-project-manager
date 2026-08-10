@@ -16,7 +16,7 @@ from .security import hash_password, verify_password
 from .utils import utc_now
 
 F = TypeVar("F", bound=Callable[..., Any])
-DPM_VERSION = "1.0.0"
+DPM_VERSION = "1.1.0"
 DPM_NAME = "Deploy Project Manager"
 
 
@@ -213,6 +213,7 @@ def create_app(settings: Settings | None = None, *, start_background: bool = Tru
                 compose_project_name=str(payload["compose_project_name"]) if payload.get("compose_project_name") else None,
                 auto_update=bool(payload.get("auto_update", True)),
                 poll_interval=int(payload.get("poll_interval") or settings.poll_interval),
+                environment=str(payload.get("environment", "")) if "environment" in payload else None,
             )
             return jsonify({"ok": True, "project": project}), 202
         except (ProjectError, ValueError) as exc:
@@ -229,6 +230,21 @@ def create_app(settings: Settings | None = None, *, start_background: bool = Tru
             context.projects.delete_project(project_id, purge=True)
             return jsonify({"ok": True})
         except (ProjectError, ValueError) as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+
+    @app.route(prefix + "/api/projects/<int:project_id>/environment", methods=["GET", "PUT"])
+    @api_login_required
+    def api_project_environment(project_id: int) -> Any:
+        try:
+            if request.method == "GET":
+                return jsonify({"ok": True, "environment": context.projects.project_environment(project_id)})
+            payload = request.get_json(silent=True) or {}
+            content = payload.get("content")
+            if not isinstance(content, str):
+                raise ProjectError("Environment content must be text")
+            environment = context.projects.save_project_environment(project_id, content)
+            return jsonify({"ok": True, "environment": environment})
+        except ProjectError as exc:
             return jsonify({"ok": False, "error": str(exc)}), 400
 
     @app.route(prefix + "/api/projects/<int:project_id>/<action>", methods=["POST"])
