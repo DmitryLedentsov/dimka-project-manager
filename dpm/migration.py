@@ -116,6 +116,12 @@ class MigrationManager:
             candidate = Path(stored_env)
             paths.add((candidate if candidate.is_absolute() else repository / candidate).resolve())
         try:
+            resolved_env = self.compose.env_path(project)
+            if resolved_env:
+                paths.add(resolved_env.resolve())
+        except ComposeError as exc:
+            warnings.append(f"{project['name']}: Compose env file could not be resolved: {exc}")
+        try:
             config = self.compose.config(project)
         except ComposeError as exc:
             warnings.append(f"{project['name']}: Compose config could not be inspected: {exc}")
