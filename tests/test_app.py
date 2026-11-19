@@ -24,6 +24,7 @@ class AppTests(unittest.TestCase):
                 admin_password_hash=None,
                 admin_is_default=False,
                 poll_interval=60,
+                compose_timeout=240,
                 debug=False,
             )
             app = create_app(settings, start_background=False)
@@ -37,7 +38,7 @@ class AppTests(unittest.TestCase):
                 follow_redirects=True,
             )
             self.assertEqual(response.status_code, 200)
-            self.assertIn(b"Services overview", response.data)
+            self.assertIn(b"Managed stacks", response.data)
 
 
 if __name__ == "__main__":
