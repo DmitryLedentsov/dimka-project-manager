@@ -68,6 +68,8 @@ class ProjectManager:
         auto_update: bool = True,
         poll_interval: int | None = None,
         environment: str | None = None,
+        schedule_initial_deploy: bool = True,
+        desired_state: str = "running",
     ) -> dict[str, Any]:
         repository_url = repository_url.strip()
         if not repository_url or "\n" in repository_url:
@@ -82,6 +84,10 @@ class ProjectManager:
         repo_path = project_root / "repository"
         managed_env = str(self.environment.path(project_name)) if environment is not None else None
         stored_env_file = managed_env or (env_file.strip() if env_file else None)
+        desired_state = desired_state.strip().lower()
+        if desired_state not in {"running", "stopped"}:
+            raise ProjectError("Desired state must be running or stopped")
+        deploy_status = "queued" if schedule_initial_deploy else "imported"
         now = utc_now()
         try:
             project_id = self.db.execute(
@@ -90,7 +96,7 @@ class ProjectManager:
                     name, repository_url, branch, repo_path, compose_file,
                     compose_project_name, env_file, auto_update, poll_interval,
                     desired_state, deploy_status, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', 'queued', ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     project_name,
@@ -102,6 +108,8 @@ class ProjectManager:
                     stored_env_file,
                     1 if auto_update else 0,
                     max(15, poll_interval or self.settings.poll_interval),
+                    desired_state,
+                    deploy_status,
                     now,
                     now,
                 ],
@@ -119,8 +127,21 @@ class ProjectManager:
             shutil.rmtree(project_root, ignore_errors=True)
             raise ProjectError(str(exc)) from exc
         project = self.get_project(project_id)
-        self.schedule_deploy(project_id, force=True, reason="initial install")
+        if schedule_initial_deploy:
+            self.schedule_deploy(project_id, force=True, reason="initial install")
         return project
+
+    def prepare_checkout(self, project_id: int) -> dict[str, Any]:
+        project = self.raw_project(project_id)
+        try:
+            self.git.ensure_checkout(
+                project["repository_url"],
+                project["branch"],
+                Path(project["repo_path"]),
+            )
+        except GitError as exc:
+            raise ProjectError(str(exc)) from exc
+        return self.get_project(project_id)
 
     def raw_project(self, project_id: int) -> dict[str, Any]:
         project = self.db.fetchone("SELECT * FROM projects WHERE id = ?", [project_id])

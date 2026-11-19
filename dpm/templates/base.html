@@ -18,6 +18,7 @@
     <nav>
       <a class="nav-item {% if active_page == 'projects' %}active{% endif %}" href="{{ base_path }}/"><span>▦</span>Projects</a>
       <button class="nav-item js-open-add" type="button"><span>＋</span>Add project</button>
+      <a class="nav-item {% if active_page == 'settings' %}active{% endif %}" href="{{ base_path }}/settings"><span>⚙</span>Settings</a>
     </nav>
     <div class="runtime-card"><span>RUNTIME</span><strong>DOCKER COMPOSE</strong><small>Git → images → containers</small><i></i></div>
     <footer>
@@ -28,7 +29,7 @@
   <div class="main">
     <header class="topbar">
       <button class="menu" id="mobile-menu" type="button">☰</button>
-      <div class="crumb"><span>DPM</span><i>/</i><b>COMPOSE PROJECTS</b></div>
+      <div class="crumb"><span>DPM</span><i>/</i><b>{% if active_page == 'settings' %}SETTINGS{% else %}COMPOSE PROJECTS{% endif %}</b></div>
       <div class="search"><span>⌕</span><input id="global-filter" type="search" placeholder="SEARCH PROJECT / SERVICE / IMAGE"><kbd>/</kbd></div>
       <div class="node"><i></i><span>DOCKER NODE</span><b id="live-clock">--:--</b></div>
     </header>

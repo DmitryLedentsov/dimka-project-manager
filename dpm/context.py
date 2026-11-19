@@ -6,6 +6,7 @@ from .compose import ComposeRuntime
 from .config import Settings
 from .db import Database
 from .gitops import GitRepository
+from .migration import MigrationManager
 from .projects import ProjectManager
 from .scheduler import UpdateScheduler
 
@@ -16,6 +17,7 @@ class DpmContext:
     db: Database
     compose: ComposeRuntime
     projects: ProjectManager
+    migration: MigrationManager
     scheduler: UpdateScheduler
 
     @classmethod
@@ -26,8 +28,9 @@ class DpmContext:
         db = Database(settings.database_path)
         compose = ComposeRuntime(settings)
         projects = ProjectManager(settings, db, GitRepository(), compose)
+        migration = MigrationManager(settings, db, projects, compose)
         scheduler = UpdateScheduler(db, projects)
-        context = cls(settings, db, compose, projects, scheduler)
+        context = cls(settings, db, compose, projects, migration, scheduler)
         if start_background:
             scheduler.start()
         return context

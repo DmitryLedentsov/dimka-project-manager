@@ -3,20 +3,23 @@ from __future__ import annotations
 import atexit
 import functools
 import secrets
+import tempfile
 import time
+from pathlib import Path
 from typing import Any, Callable, TypeVar
 
-from flask import Flask, Response, abort, jsonify, redirect, render_template, request, session, url_for
+from flask import Flask, Response, abort, jsonify, redirect, render_template, request, send_file, session, url_for
 from waitress import serve
 
 from .config import Settings, load_settings
 from .context import DpmContext
+from .migration import MigrationError
 from .projects import ProjectError
 from .security import hash_password, verify_password
 from .utils import utc_now
 
 F = TypeVar("F", bound=Callable[..., Any])
-DPM_VERSION = "1.1.0"
+DPM_VERSION = "1.2.0"
 DPM_NAME = "Deploy Project Manager"
 
 
@@ -55,7 +58,7 @@ def create_app(settings: Settings | None = None, *, start_background: bool = Tru
         SESSION_COOKIE_SAMESITE="Strict",
         SESSION_COOKIE_SECURE=settings.secure_cookie,
         SESSION_COOKIE_PATH=settings.base_path,
-        MAX_CONTENT_LENGTH=256 * 1024,
+        MAX_CONTENT_LENGTH=20 * 1024 * 1024 * 1024,
     )
     context = DpmContext.create(settings, start_background=start_background)
     app.extensions["dpm"] = context
@@ -145,6 +148,74 @@ def create_app(settings: Settings | None = None, *, start_background: bool = Tru
     @page_login_required
     def dashboard() -> str:
         return render_template("dashboard.html", active_page="projects")
+
+    @app.route(prefix + "/settings")
+    @page_login_required
+    def settings_page() -> str:
+        project_count = context.db.fetchone("SELECT COUNT(*) AS count FROM projects")["count"]
+        return render_template(
+            "settings.html",
+            active_page="settings",
+            project_count=project_count,
+        )
+
+    @app.route(prefix + "/migration/export", methods=["POST"])
+    @page_login_required
+    def migration_export() -> Any:
+        supplied_csrf = request.form.get("csrf_token", "")
+        expected_csrf = session.get("csrf_token", "")
+        if not supplied_csrf or not expected_csrf or not secrets.compare_digest(supplied_csrf, expected_csrf):
+            abort(403)
+        password = request.form.get("password", "")
+        include_git = request.form.get("include_git") == "1"
+        include_volumes = request.form.get("include_volumes") == "1"
+        temp = tempfile.NamedTemporaryFile(prefix="dpm-migration-", suffix=".zip", delete=False)
+        temp_path = Path(temp.name)
+        temp.close()
+        try:
+            context.migration.export_archive(
+                temp_path,
+                password,
+                include_git_credentials=include_git,
+                include_volumes=include_volumes,
+            )
+        except MigrationError as exc:
+            temp_path.unlink(missing_ok=True)
+            return render_template(
+                "settings.html",
+                active_page="settings",
+                project_count=context.db.fetchone("SELECT COUNT(*) AS count FROM projects")["count"],
+                migration_error=str(exc),
+            ), 400
+        filename = "dpm-migration-" + utc_now()[:10] + ".zip"
+        response = send_file(
+            temp_path,
+            as_attachment=True,
+            download_name=filename,
+            mimetype="application/zip",
+            conditional=False,
+        )
+        response.call_on_close(lambda: temp_path.unlink(missing_ok=True))
+        return response
+
+    @app.route(prefix + "/api/migration/import", methods=["POST"])
+    @api_login_required
+    def migration_import() -> Any:
+        upload = request.files.get("archive")
+        password = request.form.get("password", "")
+        if not upload or not upload.filename:
+            return jsonify({"ok": False, "error": "Choose a DPM migration ZIP"}), 400
+        temp = tempfile.NamedTemporaryFile(prefix="dpm-import-", suffix=".zip", delete=False)
+        temp_path = Path(temp.name)
+        temp.close()
+        try:
+            upload.save(temp_path)
+            result = context.migration.import_archive(temp_path, password)
+            return jsonify({"ok": True, "result": result})
+        except MigrationError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+        finally:
+            temp_path.unlink(missing_ok=True)
 
     @app.route(prefix + "/projects/<int:project_id>")
     @page_login_required

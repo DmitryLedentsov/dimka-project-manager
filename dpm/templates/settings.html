@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}Settings · DPM{% endblock %}
+{% block content %}
+<section class="page-head">
+  <div>
+    <div class="eyebrow">CONTROL PLANE / SETTINGS</div>
+    <h1>Settings</h1>
+    <p>Server migration, credentials and persistent Compose data.</p>
+  </div>
+</section>
+
+{% if migration_error %}
+<div class="warning migration-error"><div><strong>EXPORT FAILED</strong><span>{{ migration_error }}</span></div></div>
+{% endif %}
+
+<section class="migration-grid">
+  <article class="panel migration-card">
+    <header><div><div class="eyebrow">MIGRATION / EXPORT</div><h2>Download migration ZIP</h2></div><span class="migration-count">{{ project_count }} PROJECTS</span></header>
+    <form class="migration-form" id="migration-export-form" action="{{ base_path }}/migration/export" method="post">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <div class="migration-copy">
+        <strong>Portable server archive</strong>
+        <p>Includes project definitions and external Compose config/secrets. Repositories are cloned again on the destination server.</p>
+      </div>
+      <label class="toggle-row">
+        <span><strong>GIT CREDENTIALS</strong><small>Include DPM SSH keys and known_hosts.</small></span>
+        <input name="include_git" value="1" type="checkbox" checked><i></i>
+      </label>
+      <label class="toggle-row">
+        <span><strong>PERSISTENT DATA</strong><small>Include Docker named volumes. Projects with volumes are stopped during the snapshot and started again afterwards.</small></span>
+        <input name="include_volumes" value="1" type="checkbox"><i></i>
+      </label>
+      <label><span>ARCHIVE PASSWORD</span><input name="password" type="password" minlength="8" autocomplete="new-password" required placeholder="AES-256 password"></label>
+      <label><span>REPEAT PASSWORD</span><input name="repeat_password" type="password" minlength="8" autocomplete="new-password" required></label>
+      <div class="migration-note">The ZIP contains secrets. DPM encrypts it with AES-256 and never stores the archive password.</div>
+      <button class="button primary full" type="submit">DOWNLOAD ZIP ↓</button>
+    </form>
+  </article>
+
+  <article class="panel migration-card">
+    <header><div><div class="eyebrow">MIGRATION / IMPORT</div><h2>Import migration ZIP</h2></div><span class="migration-count">RESTORE</span></header>
+    <form class="migration-form" id="migration-import-form">
+      <div class="migration-copy">
+        <strong>Restore on this server</strong>
+        <p>Restores project configs, Git credentials and included volumes, then clones repositories. Imported projects stay stopped.</p>
+      </div>
+      <label class="file-drop" id="migration-file-drop">
+        <span>ZIP ARCHIVE</span>
+        <input name="archive" type="file" accept=".zip,application/zip" required>
+        <b id="migration-file-name">CHOOSE FILE</b>
+        <small>Existing non-empty Docker volumes or duplicate project names are never overwritten.</small>
+      </label>
+      <label><span>ARCHIVE PASSWORD</span><input name="password" type="password" minlength="8" autocomplete="current-password" required></label>
+      <div class="migration-note">After import, review host-specific URLs/domains. Automatic updates remain disabled until you enable them again.</div>
+      <button class="button primary full" type="submit">IMPORT ARCHIVE ↑</button>
+    </form>
+    <div class="migration-result hidden" id="migration-result"></div>
+  </article>
+</section>
+{% endblock %}
+{% block scripts %}<script src="{{ base_path }}/static/js/migration.js"></script>{% endblock %}
