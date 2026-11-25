@@ -9,9 +9,13 @@
     setTimeout(function(){$form.find('button[type=submit]').prop('disabled',false).text('DOWNLOAD ZIP ↓');},15000);
   });
 
-  $('#migration-import-form [name=archive]').on('change',function(){
-    var file=this.files&&this.files[0];
-    $('#migration-file-name').text(file?file.name:'CHOOSE FILE');
+  // Choose an archive before native form validation runs.
+  $('#migration-import-form button[type=submit]').on('click',function(event){
+    var file=this.form.elements.archive;
+    if(!file.files.length){
+      event.preventDefault();
+      file.click();
+    }
   });
 
   $('#migration-import-form').on('submit',async function(event){
@@ -30,7 +34,7 @@
       if(warnings.length)html+='<ul>'+warnings.map(function(item){return '<li>'+DPM.escape(item)+'</li>';}).join('')+'</ul>';
       $('#migration-result').html(html).removeClass('hidden');
       DPM.toast('Migration imported. Projects are stopped.','success');
-      form.reset();$('#migration-file-name').text('CHOOSE FILE');
+      form.reset();
     }catch(error){
       DPM.toast(error.message||'Import failed','error');
     }finally{
